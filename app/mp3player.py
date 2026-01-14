@@ -8,9 +8,18 @@ from queue import Empty
 import mpg123
 import logging
 import random
+import os
+import sys
 from ctypes.util import find_library
 
 logger = logging.getLogger(__name__)
+
+# Windows: Set MPG123_MODDIR to find audio output plugins
+if sys.platform == 'win32':
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    plugins_dir = os.path.join(base_dir, 'mpg123-1.32.10-x86-64', 'plugins')
+    if os.path.exists(plugins_dir):
+        os.environ['MPG123_MODDIR'] = plugins_dir
 
 class mpg123_frameinfo(ctypes.Structure):
     _fields_ = [
@@ -39,6 +48,13 @@ class ExtMpg123(mpg123.Mpg123):
 
         if not library_path:
             library_path = find_library('libmpg123-0')
+
+        # Windows: Try loading from musicfig directory
+        if not library_path:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            dll_path = os.path.join(base_dir, 'libmpg123-0.dll')
+            if os.path.exists(dll_path):
+                library_path = dll_path
 
         if not library_path:
             raise self.LibInitializationException('libmpg123 not found.')
@@ -95,6 +111,16 @@ class ExtMpg123(mpg123.Mpg123):
 
 class ExtOut123(mpg123.Out123):
     def __init__(self, library_path=None):
+        # Windows: Try loading from musicfig directory
+        if not library_path:
+            library_path = find_library('out123')
+        if not library_path:
+            library_path = find_library('libout123-0')
+        if not library_path:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            dll_path = os.path.join(base_dir, 'libout123-0.dll')
+            if os.path.exists(dll_path):
+                library_path = dll_path
         super().__init__(library_path)
 
     def pause(self):
