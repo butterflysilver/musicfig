@@ -159,7 +159,7 @@ def spotcast(spotify_uri,position_ms=0):
 def main():
     global user
     user = session.get('user', None)
-    if user == None:
+    if user is None:
         # Auto login
         return redirect('/login', 307)
     return render_template("index.html", user=user)

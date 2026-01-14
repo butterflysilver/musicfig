@@ -2,8 +2,13 @@ __pycache__/
 app/.cache/
 config.py
 musicfig.log
+musicfig.log.*
 tags.yml
+xbox_tokens.json
+samsung_token.txt
 .idea/
 .DS_Store
 env/
+venv/
 app/test.py
+nul
