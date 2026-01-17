@@ -8,6 +8,7 @@ import app.huesyncbox as huesyncbox
 import app.samsungtv as samsungtv
 import app.homepod as homepod
 import app.xboxctl as xboxctl
+import app.yoto as yoto
 import app.tags as nfctags
 import binascii
 import logging
@@ -488,6 +489,19 @@ class Base():
                                     time.sleep(3)  # Wait for Xbox to wake
                                     logger.info('Launching Xbox app: %s' % xbox_app)
                                     xboxctl.sync_launch_app(xbox_app)
+                            else:
+                                self.base.flash_pad(pad=pad, on_length=10, off_length=10,
+                                                   pulse_count=6, colour=self.RED)
+                        # Yoto player - play card from library
+                        if ('yoto' in tags['identifier'][identifier]):
+                            self.stopMp3()
+                            yoto.load_config(tags)
+                            card_id = tags['identifier'][identifier]['yoto']
+                            # Optional: specify which player
+                            player_id = tags['identifier'][identifier].get('yoto_player', None)
+                            logger.info('Playing Yoto card: %s' % card_id)
+                            if yoto.sync_play_card(card_id, player_id):
+                                self.base.switch_pad(pad, self.PINK)  # Pink for Yoto
                             else:
                                 self.base.flash_pad(pad=pad, on_length=10, off_length=10,
                                                    pulse_count=6, colour=self.RED)
