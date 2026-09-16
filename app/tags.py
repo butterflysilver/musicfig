@@ -8,10 +8,14 @@ class Tags():
 
     def __init__(self):
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        if Path(current_dir + '/../tags.yml').is_file():
-            self.tags_file = current_dir + '/../tags.yml'
-        if Path('/config/tags.yml').is_file():
-            self.tags_file = '/config/tags.yml'
+        env_tags_file = os.environ.get('MUSICFIG_TAGS_FILE')
+        if env_tags_file:
+            self.tags_file = env_tags_file
+        else:
+            if Path(current_dir + '/../tags.yml').is_file():
+                self.tags_file = current_dir + '/../tags.yml'
+            if Path('/config/tags.yml').is_file():
+                self.tags_file = '/config/tags.yml'
         self.last_updated = ''
 
     def load_tags(self):

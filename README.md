@@ -54,6 +54,9 @@ To play music you can use the following **options**:
 
 This allows Musicfig to play in offline mode, by accessing local MP3 files. 
 
+**Raspberry Pi OS Bookworm/Trixie (venv, system user, systemd, coexists with the GSD kiosk):**
+use the maintained recipe in [`scripts/pi/README.md`](scripts/pi/README.md) instead of the steps below.
+
 Firstly, connect your LEGO Dimensions toy pad to the Raspberry Pi via the USB port.
 
 Now connect the speakers to the Raspberry Pi.

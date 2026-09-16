@@ -16,8 +16,8 @@ _config = {}
 _yoto_manager = None
 
 # File paths
-TOKEN_FILE = os.path.expanduser("~/.yoto-tokens.json")
-CONFIG_FILE = os.path.expanduser("~/.config/mcp-yoto/config.json")
+TOKEN_FILE = os.environ.get('MUSICFIG_YOTO_TOKEN_FILE') or os.path.expanduser("~/.yoto-tokens.json")
+CONFIG_FILE = os.environ.get('MUSICFIG_YOTO_CONFIG_FILE') or os.path.expanduser("~/.config/mcp-yoto/config.json")
 
 
 def load_config(tags: dict) -> None:

@@ -10,5 +10,6 @@ samsung_token.txt
 .DS_Store
 env/
 venv/
+.venv/
 app/test.py
 nul

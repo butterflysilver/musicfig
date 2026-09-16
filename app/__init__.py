@@ -23,7 +23,7 @@ logging.config.dictConfig({
             'level': 'INFO',
             'formatter': 'default',
             'class': 'logging.handlers.RotatingFileHandler',
-            'filename': 'musicfig.log',
+            'filename': os.environ.get('MUSICFIG_LOG_FILE', 'musicfig.log'),
             'mode': 'a',
             'maxBytes': 1048576,
             'backupCount': 10
@@ -45,7 +45,7 @@ if app_version == '':
 
 VERSION_URL = "https://api.github.com/repos/meltaxa/jukebox-portal/releases"
 try:
-    url = requests.get(VERSION_URL)
+    url = requests.get(VERSION_URL, timeout=5)
     latest_version = url.json()[0]['tag_name']
 
     if latest_version != app_version:
