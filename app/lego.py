@@ -36,33 +36,71 @@ import glob
 
 logger = logging.getLogger(__name__)
 
+# How often to look for a pad that is missing or was unplugged.
+RECONNECT_INTERVAL = 3.0
+
+# libusb errnos that mean the pad is gone or wedged (unplugged, port reset,
+# hub dropped it, endpoint stalled): EIO, ENODEV, EPIPE. Anything else is
+# treated as transient.
+_PAD_GONE_ERRNOS = (5, 19, 32)
+
+
 class Dimensions():
+    """The LEGO Dimensions pad. Survives the pad being absent at start-up
+    or unplugged while running: every call is a no-op until reconnect()
+    brings it back, and nothing here spins or raises."""
 
     def __init__(self):
+        self.dev = None
+        self._retry_at = 0.0
+        self._waiting_logged = False
+        self.reconnect()
+
+    def reconnect(self):
+        """(Re)open the pad if it is not open. Returns True only at the
+        moment a pad comes online so the caller can restore its lights.
+        Attempts are spaced RECONNECT_INTERVAL apart and the wait is
+        slept here, so a missing pad costs no CPU."""
+        if self.dev is not None:
+            return False
+        now = time.monotonic()
+        if now < self._retry_at:
+            time.sleep(min(self._retry_at - now, 0.5))
+            return False
+        self._retry_at = now + RECONNECT_INTERVAL
         try:
             self.dev = self.init_usb()
         except (ValueError, usb.core.USBError) as e:
-            logger.error('Failed to initialize USB device: %s' % e)
             self.dev = None
+            if not self._waiting_logged:
+                logger.warning('LEGO pad not available (%s); retrying every %ss'
+                               % (e, RECONNECT_INTERVAL))
+                self._waiting_logged = True
+            return False
+        self._waiting_logged = False
+        logger.info('LEGO pad connected')
+        return True
+
+    def _lost(self, err):
+        """Forget a pad that stopped answering; reconnect() takes it from here."""
+        logger.warning('LEGO pad lost (%s); waiting for it to come back' % err)
+        try:
+            usb.util.dispose_resources(self.dev)
+        except Exception:
+            pass
+        self.dev = None
+        self._retry_at = time.monotonic() + RECONNECT_INTERVAL
+
+    @staticmethod
+    def _is_gone(err):
+        return (getattr(err, 'errno', None) in _PAD_GONE_ERRNOS
+                or 'No such device' in str(err))
 
     def init_usb(self):
         dev = usb.core.find(idVendor=0x0e6f, idProduct=0x0241)
 
         if dev is None:
-            logger.error('Lego Dimensions pad not found')
-            raise ValueError('Device not found')
-
-        # A pad enumerated at boot can come up lit but never reporting tags
-        # (game-room Pi, 2026-09-18); a port reset - the software equivalent
-        # of re-plugging it - clears that. The old handle is stale afterwards,
-        # so look the device up again.
-        try:
-            dev.reset()
-            time.sleep(1)
-            dev = usb.core.find(idVendor=0x0e6f, idProduct=0x0241) or dev
-            logger.info('USB port reset of the pad done')
-        except (usb.core.USBError, NotImplementedError) as e:
-            logger.warning('USB port reset of the pad failed (%s); continuing', e)
+            raise ValueError('pad not found on USB')
 
         # Windows with WinUSB doesn't need kernel driver detach
         try:
@@ -96,10 +134,16 @@ class Dimensions():
         while len(message) < 32:
             message.append(0x00)
 
+        dev = self.dev  # snapshot: the main loop may drop it from another thread
+        if dev is None:
+            return
         try:
-            self.dev.write(1, message)
+            dev.write(1, message)
         except usb.core.USBError as e:
-            logger.warning('USB write error: %s' % e)
+            if self._is_gone(e):
+                self._lost(e)
+            else:
+                logger.warning('USB write error: %s' % e)
 
     def switch_pad(self, pad, colour):
         self.send_command([0x55, 0x06, 0xc0, 0x02, pad, colour[0], 
@@ -118,8 +162,11 @@ class Dimensions():
         return
 
     def update_nfc(self):
+        dev = self.dev
+        if dev is None:
+            return
         try:
-            inwards_packet = self.dev.read(0x81, 32, timeout = 100)
+            inwards_packet = dev.read(0x81, 32, timeout = 100)
             bytelist = list(inwards_packet)
             if not bytelist:
                 return
@@ -139,10 +186,15 @@ class Dimensions():
             # Normal timeout, no data available
             return
         except usb.core.USBError as e:
-            logger.warning('USB error: %s' % e)
+            if self._is_gone(e):
+                self._lost(e)
+            else:
+                logger.warning('USB error: %s' % e)
+                time.sleep(0.1)  # never spin on a repeating error
             return
         except Exception as e:
             logger.warning('NFC read error: %s' % e)
+            time.sleep(0.1)
             return
 
 def run_tag_hook(cmd, identifier, pad, timeout=30):
@@ -347,6 +399,12 @@ class Base():
         else:
             self.base.switch_pad(0,self.OFF)
         while True:
+            if self.base.reconnect():
+                # A pad just came (back) online: give it its idle colour.
+                if switch_lights:
+                    self.base.switch_pad(0, self.GREEN)
+                else:
+                    self.base.switch_pad(0, self.OFF)
             tag = self.base.update_nfc()
             if tag:
                 status = tag.split(':')[0]
