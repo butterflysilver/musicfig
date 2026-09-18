@@ -10,7 +10,11 @@ import os
 import threading
 from typing import Optional
 
-import pyatv
+# Optional dependency (requirements-extras.txt); see appletv.py.
+try:
+    import pyatv
+except ImportError:  # pragma: no cover - depends on the install
+    pyatv = None
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +63,7 @@ async def _scan_devices() -> dict:
     return device_map
 
 
-async def _get_device(target: str) -> Optional[pyatv.interface.AppleTV]:
+async def _get_device(target: str) -> Optional["pyatv.interface.AppleTV"]:
     """Get a pyatv device by name or IP address."""
     devices = await _scan_devices()
 
@@ -105,7 +109,8 @@ async def _stream_file_async(file_path: str, target: str) -> bool:
 
 def stream_file(file_path: str, target: str = None) -> bool:
     """
-    Stream an audio file to a HomePod.
+    Stream an audio file to a HomePod. Returns False (with a warning) when
+    pyatv is not installed.
 
     Args:
         file_path: Path to the MP3 file (absolute or relative to mp3_dir)
@@ -114,6 +119,9 @@ def stream_file(file_path: str, target: str = None) -> bool:
     Returns:
         True if streaming started successfully
     """
+    if pyatv is None:
+        logger.warning("HomePod stream skipped: pyatv is not installed (pip install -r requirements-extras.txt)")
+        return False
     # Resolve file path
     if not os.path.isabs(file_path):
         mp3_dir = _config.get('mp3_dir', '')

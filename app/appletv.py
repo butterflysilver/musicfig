@@ -6,8 +6,15 @@ Enables launching Disney+, Netflix, and other streaming content via deep links.
 
 import asyncio
 import logging
-import pyatv
-from pyatv.const import Protocol
+# Optional dependency: pyatv is in requirements-extras.txt, not requirements.txt
+# (it needs a compiler on the Pi). Without it the Apple TV tag actions are
+# simply unavailable and everything else runs.
+try:
+    import pyatv
+    from pyatv.const import Protocol
+except ImportError:  # pragma: no cover - depends on the install
+    pyatv = None
+    Protocol = None
 
 logger = logging.getLogger(__name__)
 
@@ -314,9 +321,15 @@ def load_config(tags):
 
 
 def activated():
-    """Check if Apple TV integration is available."""
-    # pyatv is imported at top - if unavailable, module wouldn't load
-    # Return True since Apple TV can be auto-discovered on network
+    """Check if Apple TV integration is available (pyatv installed).
+
+    Apple TVs are auto-discovered on the network, so with pyatv present this
+    is always True; without it the Disney/Netflix/YouTube tag actions log a
+    warning and do nothing.
+    """
+    if pyatv is None:
+        logger.warning("Apple TV action skipped: pyatv is not installed (pip install -r requirements-extras.txt)")
+        return False
     return True
 
 

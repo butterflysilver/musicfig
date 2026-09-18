@@ -6,7 +6,13 @@ Enables HDMI input switching before launching content on Apple TV.
 
 import asyncio
 import logging
-from aiohuesyncbox import HueSyncBox, InvalidState
+# Optional dependency (requirements-extras.txt); without it the Hue Sync Box
+# integration reports itself as not configured and everything else runs.
+try:
+    from aiohuesyncbox import HueSyncBox, InvalidState
+except ImportError:  # pragma: no cover - depends on the install
+    HueSyncBox = None
+    InvalidState = Exception
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +302,11 @@ def activated():
 
 
 def configured():
-    """Check if Hue Sync Box is fully configured."""
+    """Check if Hue Sync Box is fully configured (and its library installed)."""
+    if HueSyncBox is None:
+        if SYNCBOX_HOST:
+            logger.warning("Hue Sync Box configured but aiohuesyncbox is not installed (pip install -r requirements-extras.txt)")
+        return False
     return bool(SYNCBOX_HOST and SYNCBOX_ID and SYNCBOX_TOKEN and SYNCBOX_APPLETV_INPUT)
 
 
