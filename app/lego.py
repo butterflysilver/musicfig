@@ -52,6 +52,18 @@ class Dimensions():
             logger.error('Lego Dimensions pad not found')
             raise ValueError('Device not found')
 
+        # A pad enumerated at boot can come up lit but never reporting tags
+        # (game-room Pi, 2026-09-18); a port reset - the software equivalent
+        # of re-plugging it - clears that. The old handle is stale afterwards,
+        # so look the device up again.
+        try:
+            dev.reset()
+            time.sleep(1)
+            dev = usb.core.find(idVendor=0x0e6f, idProduct=0x0241) or dev
+            logger.info('USB port reset of the pad done')
+        except (usb.core.USBError, NotImplementedError) as e:
+            logger.warning('USB port reset of the pad failed (%s); continuing', e)
+
         # Windows with WinUSB doesn't need kernel driver detach
         try:
             if dev.is_kernel_driver_active(0):
