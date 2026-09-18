@@ -65,8 +65,10 @@ LIBMPG123="$(pick_pkg libmpg123-0t64 libmpg123-0)"
 LIBOUT123="$(pick_pkg libout123-0t64 libout123-0)"
 log "mpg123 libraries for this suite: ${LIBMPG123} ${LIBOUT123}"
 # No PipeWire/PulseAudio on purpose: sound goes straight to ALSA over HDMI.
+# build-essential + python3-dev: the pyatv extra (HomePod AirPlay, Apple TV)
+# pulls in miniaudio, which builds from source on arm64.
 apt-get install -y -qq --no-install-recommends \
-    python3 python3-venv python3-pip \
+    python3 python3-venv python3-pip python3-dev build-essential \
     "${LIBMPG123}" "${LIBOUT123}" mpg123 \
     libusb-1.0-0 git alsa-utils
 
@@ -102,6 +104,12 @@ fi
 log "Installing Python requirements (the mpg123 wheel needs ${LIBMPG123} present)..."
 as_svc "${VENV_DIR}/bin/pip" install --quiet --upgrade pip wheel
 as_svc "${VENV_DIR}/bin/pip" install --quiet -r "${APP_DIR}/requirements.txt"
+# Optional integrations (HomePod AirPlay, Apple TV, Hue sync box). Set
+# MUSICFIG_EXTRAS=no to skip them on a Pi that will never talk to Apple gear.
+if [[ "${MUSICFIG_EXTRAS:-yes}" == "yes" ]]; then
+    log "Installing the optional integrations (pyatv builds miniaudio; a few minutes on a Pi 5)..."
+    as_svc "${VENV_DIR}/bin/pip" install --quiet -r "${APP_DIR}/requirements-extras.txt"
+fi
 
 # -------------------------------------------------------------------- udev --
 if ! cmp -s "${APP_DIR}/99-lego.rules" /etc/udev/rules.d/99-lego.rules; then
