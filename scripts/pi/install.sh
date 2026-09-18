@@ -164,6 +164,7 @@ Group=${SVC_USER}
 WorkingDirectory=${SVC_HOME}
 Environment=PYTHONPATH=${CONF_DIR}
 Environment=MUSICFIG_TAGS_FILE=${CONF_DIR}/tags.yml
+Environment=MUSICFIG_ROOM=$(hostname -s)
 Environment=MUSICFIG_LOG_FILE=${SVC_HOME}/musicfig.log
 Environment=MUSICFIG_CACHE_DIR=${SVC_HOME}/cache
 Environment=MUSICFIG_YOTO_TOKEN_FILE=${SVC_HOME}/yoto-tokens.json

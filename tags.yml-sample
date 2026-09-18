@@ -4,8 +4,25 @@ mp3_dir: /path/to/base/mp3/folder
 # Ligthshow switch
 lights: on
 
+# Room awareness (optional). Each Pi knows its room (MUSICFIG_ROOM, defaults
+# to the hostname). A tag can behave differently per room with a `rooms:`
+# block, and `homepod: "@room"` targets the HomePod listed for that room here.
+room_homepods:
+    guest-room: Guest Room HomePod
+    game-room: Basement (2)
+
 # NFC tags have unique identifiers which are assigned "Spotify URI" actions.
 identifier:
+    04a68312fe4a80:
+        # Same tag, different behaviour per pad: kitchen plays on the panel's
+        # own speaker, every other room streams to that room's HomePod.
+        name: Peter Pan (room aware)
+        airplay: peterpan.mp3
+        homepod: "@room"
+        rooms:
+            kitchen:
+                airplay: null        # null drops the inherited key
+                mp3: peterpan.mp3
     05631b62124:
         # LEGO minifigure. Play mp3 folder
         name: Peter Pan

@@ -13,6 +13,7 @@ import app.tags as nfctags
 import binascii
 import logging
 import os
+import socket
 import shlex
 import subprocess
 import sys
@@ -35,6 +36,10 @@ import app.mp3player as mp3player
 import glob
 
 logger = logging.getLogger(__name__)
+
+# Which room this pad is in (the Pi's hostname unless MUSICFIG_ROOM says
+# otherwise); tags can behave differently per room, see tags.resolve_for_room.
+ROOM = os.environ.get('MUSICFIG_ROOM') or socket.gethostname().split('.')[0]
 
 # How often to look for a pad that is missing or was unplugged.
 RECONNECT_INTERVAL = 3.0
@@ -399,7 +404,8 @@ class Base():
         mp3state = None
         nfc = nfctags.Tags()
         nfc.load_tags()
-        tags = nfc.tags
+        tags = nfctags.resolve_for_room(nfc.tags, ROOM)
+        logger.info('Pad room: %s' % ROOM)
         self.base = Dimensions()
         logger.info("Lego Dimensions base activated.")
         self.initMp3()
@@ -446,9 +452,9 @@ class Base():
                     if switch_lights:
                         self.base.switch_pad(pad = pad, colour = self.BLUE)
 
-                    # Reload the tags config file
+                    # Reload the tags config file, resolved for this room
                     nfc.load_tags()
-                    tags = nfc.tags
+                    tags = nfctags.resolve_for_room(nfc.tags, ROOM)
                     try:
                         mp3_dir = tags['mp3_dir'] + '/'
                     except KeyError:
