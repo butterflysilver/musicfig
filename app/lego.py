@@ -133,6 +133,32 @@ class Dimensions():
             logger.warning('NFC read error: %s' % e)
             return
 
+def run_tag_hook(cmd, identifier, pad, timeout=30):
+    """Run MUSICFIG_ON_TAG_CMD in the background and log its outcome.
+
+    The command is a shell string from the unit's environment (operator
+    controlled, not tag controlled). It is waited on with a timeout so the
+    child is reaped and a hung hook cannot pile up.
+    """
+    def worker():
+        try:
+            result = subprocess.run(cmd, shell=True, timeout=timeout,
+                                    stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE)
+            if result.returncode == 0:
+                logger.info('tag %s on pad %s: on-tag hook ok' % (identifier, pad))
+            else:
+                err = result.stderr.decode('utf-8', 'replace').strip().splitlines()
+                logger.warning('on-tag hook exited %s: %s' % (
+                    result.returncode, err[-1] if err else '(no output)'))
+        except subprocess.TimeoutExpired:
+            logger.warning('on-tag hook timed out after %ss' % timeout)
+        except OSError as e:
+            logger.warning('on-tag hook failed to start: %s' % e)
+    threading.Thread(target=worker, name='on-tag-hook', daemon=True).start()
+
+
 class Base():
     def __init__(self):
         self.OFF = [0, 0, 0]
@@ -325,6 +351,13 @@ class Base():
                         if spotify.activated():
                             spotify.pause()
                 if status == 'added':
+                    # Optional hook: any tag placed on the pad runs this
+                    # command (e.g. wake the room's wall display) on its own
+                    # thread, so a slow hook never delays the music and the
+                    # child is always reaped (no zombies).
+                    on_tag_cmd = os.environ.get('MUSICFIG_ON_TAG_CMD')
+                    if on_tag_cmd:
+                        run_tag_hook(on_tag_cmd, identifier, pad)
                     if switch_lights:
                         self.base.switch_pad(pad = pad, colour = self.BLUE)
 

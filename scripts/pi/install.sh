@@ -124,6 +124,24 @@ if [[ ! -f "${CONF_DIR}/tags.yml" ]]; then
     sed -i "s|^mp3_dir: .*|mp3_dir: ${SVC_HOME}/music|" "${CONF_DIR}/tags.yml"
 fi
 
+# ----------------------------------------------------------- wake the kiosk --
+# Let the service user wake the wall display (and nothing else) when a tag
+# lands on the pad. No-op on a Pi without the kiosk: the unit's hook command
+# fails quietly if gsd-screen or the kiosk user is missing.
+if id -u kiosk >/dev/null 2>&1; then
+    log "Allowing ${SVC_USER} to run gsd-screen as kiosk (wake-on-tag)..."
+    echo "${SVC_USER} ALL=(kiosk) NOPASSWD: /usr/local/bin/gsd-screen" > /etc/sudoers.d/musicfig-gsd-screen
+    chmod 0440 /etc/sudoers.d/musicfig-gsd-screen
+    visudo -cf /etc/sudoers.d/musicfig-gsd-screen >/dev/null || die "sudoers drop-in failed validation"
+fi
+
+# Unit line for the wake-on-tag hook; empty on a Pi with no kiosk user. systemd
+# splits an unquoted Environment= value on whitespace, so it must be quoted.
+ON_TAG_ENV=""
+if id -u kiosk >/dev/null 2>&1; then
+    ON_TAG_ENV='Environment="MUSICFIG_ON_TAG_CMD=sudo -n -u kiosk /usr/local/bin/gsd-screen on"'
+fi
+
 # ----------------------------------------------------------------- systemd --
 log "Writing ${UNIT_FILE}..."
 cat > "${UNIT_FILE}" <<UNIT
@@ -142,6 +160,7 @@ Environment=MUSICFIG_LOG_FILE=${SVC_HOME}/musicfig.log
 Environment=MUSICFIG_CACHE_DIR=${SVC_HOME}/cache
 Environment=MUSICFIG_YOTO_TOKEN_FILE=${SVC_HOME}/yoto-tokens.json
 Environment=MUSICFIG_YOTO_CONFIG_FILE=${SVC_HOME}/yoto-config.json
+${ON_TAG_ENV}
 ExecStart=${VENV_DIR}/bin/python ${APP_DIR}/run.py
 Restart=always
 RestartSec=5
