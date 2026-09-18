@@ -432,6 +432,7 @@ class Base():
                         except AttributeError:
                             pass  # No lightshow thread running
                         self.pauseMp3()
+                        homepod.stop()
                         if spotify.activated():
                             spotify.pause()
                 if status == 'added':
@@ -460,6 +461,7 @@ class Base():
                         self.lightshowThread.join()
                     except AttributeError:
                         pass  # No lightshow thread running
+                    homepod.stop()
 
                     if (identifier in tags['identifier']):
                         if current_tag is None:
