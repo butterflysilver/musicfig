@@ -39,6 +39,12 @@ logger = logging.getLogger(__name__)
 # How often to look for a pad that is missing or was unplugged.
 RECONNECT_INTERVAL = 3.0
 
+# A pad that WAS working and has been gone this long makes the process exit
+# so systemd (Restart=always) brings it back with a fresh libusb context:
+# libusb's cached device list can miss a device that reappears without an
+# add event (seen with a sysfs unbind/bind on the game-room Pi, 2026-09-18).
+PAD_GONE_RESTART_AFTER = 60.0
+
 # libusb errnos that mean the pad is gone or wedged (unplugged, port reset,
 # hub dropped it, endpoint stalled): EIO, ENODEV, EPIPE. Anything else is
 # treated as transient.
@@ -53,7 +59,8 @@ class Dimensions():
     def __init__(self):
         self.dev = None
         self._retry_at = 0.0
-        self._waiting_logged = False
+        self._last_error = None  # last failure logged, so repeats stay quiet
+        self._gone_since = None  # set when a working pad disappears
         self.reconnect()
 
     def reconnect(self):
@@ -72,12 +79,18 @@ class Dimensions():
             self.dev = self.init_usb()
         except (ValueError, usb.core.USBError) as e:
             self.dev = None
-            if not self._waiting_logged:
+            if str(e) != self._last_error:
                 logger.warning('LEGO pad not available (%s); retrying every %ss'
                                % (e, RECONNECT_INTERVAL))
-                self._waiting_logged = True
+                self._last_error = str(e)
+            if self._gone_since is not None                     and now - self._gone_since > PAD_GONE_RESTART_AFTER:
+                logger.error('LEGO pad gone for %.0fs; exiting so systemd restarts '
+                             'musicfig with a fresh USB view' % (now - self._gone_since))
+                logging.shutdown()
+                os._exit(3)  # startLego may run off the main thread; be certain
             return False
-        self._waiting_logged = False
+        self._last_error = None
+        self._gone_since = None
         logger.info('LEGO pad connected')
         return True
 
@@ -89,7 +102,8 @@ class Dimensions():
         except Exception:
             pass
         self.dev = None
-        self._retry_at = time.monotonic() + RECONNECT_INTERVAL
+        self._gone_since = time.monotonic()
+        self._retry_at = self._gone_since + RECONNECT_INTERVAL
 
     @staticmethod
     def _is_gone(err):
