@@ -12,6 +12,7 @@ new tag landed) and closes the connection cleanly.
 import asyncio
 import logging
 import os
+import shutil
 import threading
 from typing import Optional
 
@@ -111,6 +112,41 @@ def _is_url(source: str) -> bool:
     return source.startswith(("http://", "https://"))
 
 
+# pyatv decodes MP3/WAV/FLAC/OGG only (miniaudio); Yoto serves AAC in an MP4
+# container, which plays as silence. Remote sources are therefore transcoded
+# to MP3 through ffmpeg and piped into pyatv. MUSICFIG_TRANSCODE=no disables it.
+FFMPEG = os.environ.get('MUSICFIG_FFMPEG') or 'ffmpeg'
+
+
+def _transcode_enabled() -> bool:
+    return os.environ.get('MUSICFIG_TRANSCODE', 'yes').lower() not in ('no', '0', 'false')
+
+
+def ffmpeg_command(url: str) -> list:
+    """ffmpeg argv that turns any remote track into an MP3 stream on stdout."""
+    return [FFMPEG, '-nostdin', '-loglevel', 'error', '-i', url, '-vn',
+            '-f', 'mp3', '-b:a', '192k', '-']
+
+
+async def _play_source(atv, source: str) -> None:
+    """Stream one source: local files and MP3 URLs directly; other remote
+    files through ffmpeg (killed on cancel or failure)."""
+    if not (_is_url(source) and _transcode_enabled() and shutil.which(FFMPEG)):
+        if _is_url(source) and _transcode_enabled():
+            logger.warning("ffmpeg not found; streaming the URL as-is (AAC will be silent)")
+        await atv.stream.stream_file(source)
+        return
+    proc = await asyncio.create_subprocess_exec(
+        *ffmpeg_command(source), stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL)
+    try:
+        await atv.stream.stream_file(proc.stdout)
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+        await proc.wait()
+
+
 async def _stream_sources_async(sources: list, target: str, started: threading.Event,
                                 ok: list) -> None:
     """Stream sources (local paths or HTTPS URLs) to a HomePod one after the
@@ -142,7 +178,7 @@ async def _stream_sources_async(sources: list, target: str, started: threading.E
                 ok[0] = True
                 started.set()
             try:
-                await atv.stream.stream_file(source)
+                await _play_source(atv, source)
                 failures = 0
             except asyncio.CancelledError:
                 raise

@@ -70,7 +70,7 @@ log "mpg123 libraries for this suite: ${LIBMPG123} ${LIBOUT123}"
 apt-get install -y -qq --no-install-recommends \
     python3 python3-venv python3-pip python3-dev build-essential \
     "${LIBMPG123}" "${LIBOUT123}" mpg123 \
-    libusb-1.0-0 git alsa-utils
+    libusb-1.0-0 git alsa-utils ffmpeg
 
 # ------------------------------------------------------------- system user --
 if ! id -u "${SVC_USER}" >/dev/null 2>&1; then

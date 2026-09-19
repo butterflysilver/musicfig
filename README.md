@@ -18,7 +18,7 @@
 | **Pad hot-plug** | The pad can be missing at boot or unplugged while running: one log line, quiet retries every 3 s, automatic reconnect, and the idle colour restored. No log spam, no crash. |
 | **Headless-safe audio** | The audio device opens lazily and a missing sink (HDMI switched away, no speaker) never brings the service down. |
 | **HomePod / AirPlay streaming** | `airplay:` tags stream a local file to a HomePod through [pyatv](https://pyatv.dev). Streaming runs on a background loop, so the pad keeps reading; lifting the figure stops the stream. |
-| **Yoto card to HomePod** | `yoto_airplay: <card id>` streams a Yoto card (audiobooks, MYO uploads) to the room's HomePod. The Pi asks a small Yoto MCP service for the card's signed track URLs at tap time (one shared secret per household, never a Yoto token on the Pi) and pyatv streams them in order. Lift the figure to stop. |
+| **Yoto card to HomePod** | `yoto_airplay: <card id>` streams a Yoto card (audiobooks, MYO uploads) to the room's HomePod. The Pi asks a small Yoto MCP service for the card's signed track URLs at tap time (one shared secret per household, never a Yoto token on the Pi) and pyatv streams them in order (Yoto serves AAC, so the Pi transcodes to MP3 through ffmpeg on the fly). Lift the figure to stop. |
 | **Room-aware tags** | Each Pi knows its room (`MUSICFIG_ROOM`, default: hostname). A tag can carry per-room overrides and `homepod: "@room"` targets that room's speaker. |
 | **Optional integrations** | Apple TV (Disney+, Netflix, YouTube deep links), HomePod, Hue Sync Box and Xbox are optional imports: a Pi without them still runs. `install.sh` installs the extras by default (`MUSICFIG_EXTRAS=no` to skip). |
 | **Tests** | `python -m unittest` (see `tests/`). |
