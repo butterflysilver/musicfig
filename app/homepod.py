@@ -107,14 +107,25 @@ async def _get_device(target: str):
     return None
 
 
-async def _stream_file_async(file_path: str, target: str, started: threading.Event,
-                             ok: list) -> None:
-    """Stream one file to a HomePod. Sets `started` once audio is flowing
-    (ok[0] = True) or once it is clear it will not (ok[0] = False)."""
+def _is_url(source: str) -> bool:
+    return source.startswith(("http://", "https://"))
+
+
+async def _stream_sources_async(sources: list, target: str, started: threading.Event,
+                                ok: list) -> None:
+    """Stream sources (local paths or HTTPS URLs) to a HomePod one after the
+    other on a single connection. Sets `started` once the first one is
+    flowing (ok[0] = True) or once it is clear it will not (ok[0] = False)."""
     atv = None
     try:
-        if not os.path.exists(file_path):
-            logger.error(f"Audio file not found: {file_path}")
+        usable = []
+        for source in sources:
+            if _is_url(source) or os.path.exists(source):
+                usable.append(source)
+            else:
+                logger.error(f"Audio file not found: {source}")
+        sources = usable
+        if not sources:
             return
 
         device_config = await _get_device(target)
@@ -123,11 +134,27 @@ async def _stream_file_async(file_path: str, target: str, started: threading.Eve
 
         logger.info(f"Connecting to {device_config.name}...")
         atv = await pyatv.connect(device_config, asyncio.get_running_loop())
-        logger.info(f"Streaming {os.path.basename(file_path)} to {device_config.name}")
-        ok[0] = True
-        started.set()
-        await atv.stream.stream_file(file_path)
-        logger.info(f"Finished streaming {os.path.basename(file_path)}")
+        failures = 0
+        for index, source in enumerate(sources, start=1):
+            label = source if _is_url(source) else os.path.basename(source)
+            logger.info(f"Streaming {index}/{len(sources)} {label[:80]} to {device_config.name}")
+            if index == 1:
+                ok[0] = True
+                started.set()
+            try:
+                await atv.stream.stream_file(source)
+                failures = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # One bad track (expired signed URL, unsupported file) must not
+                # end the whole card; three in a row means something is wrong.
+                failures += 1
+                logger.error(f"Track {index}/{len(sources)} failed: {e}")
+                if failures >= 3:
+                    logger.error("Three tracks failed in a row; giving up on this stream")
+                    break
+        logger.info(f"Finished streaming {len(sources)} source(s)")
     except asyncio.CancelledError:
         logger.info("HomePod stream stopped")
         raise
@@ -155,7 +182,6 @@ def stream_file(file_path: str, target: str = None) -> bool:
     Returns:
         True if streaming started
     """
-    global _current
     if pyatv is None:
         logger.warning("HomePod stream skipped: pyatv is not installed (pip install -r requirements-extras.txt)")
         return False
@@ -173,12 +199,35 @@ def stream_file(file_path: str, target: str = None) -> bool:
         logger.error("No HomePod target specified and no default configured")
         return False
 
+    return _start([file_path], target)
+
+
+def stream_urls(urls: list, target: str = None) -> bool:
+    """Stream HTTPS URLs (e.g. a Yoto card's signed tracks) to a HomePod in
+    order, in the background. Returns True once the first one is playing."""
+    if pyatv is None:
+        logger.warning("HomePod stream skipped: pyatv is not installed (pip install -r requirements-extras.txt)")
+        return False
+    urls = [u for u in urls if isinstance(u, str) and _is_url(u)]
+    if not urls:
+        logger.error("No playable URLs to stream")
+        return False
+    if target is None:
+        target = _config.get('default_homepod', '')
+    if not target:
+        logger.error("No HomePod target specified and no default configured")
+        return False
+    return _start(urls, target)
+
+
+def _start(sources: list, target: str) -> bool:
+    global _current
     stop()  # one stream at a time
     started = threading.Event()
     ok = [False]
     try:
         fut = asyncio.run_coroutine_threadsafe(
-            _stream_file_async(file_path, target, started, ok), _get_loop())
+            _stream_sources_async(sources, target, started, ok), _get_loop())
     except Exception as e:
         logger.error(f"HomePod streaming error: {e}")
         return False

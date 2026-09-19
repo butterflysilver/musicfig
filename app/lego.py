@@ -9,6 +9,7 @@ import app.samsungtv as samsungtv
 import app.homepod as homepod
 import app.xboxctl as xboxctl
 import app.yoto as yoto
+import app.yoto_tracks as yoto_tracks
 import app.tags as nfctags
 import binascii
 import logging
@@ -576,6 +577,20 @@ class Base():
                             logger.info('Streaming to HomePod: %s' % airplay_file)
                             if homepod.stream_file(airplay_file, airplay_target):
                                 self.base.switch_pad(pad, self.LBLUE)  # Light blue for audio
+                            else:
+                                self.base.flash_pad(pad=pad, on_length=10, off_length=10,
+                                                   pulse_count=6, colour=self.RED)
+                        # Yoto card -> HomePod: signed track URLs from the Yoto MCP,
+                        # streamed in order; lifting the tag stops it (homepod.stop()).
+                        if ('yoto_airplay' in tags['identifier'][identifier]):
+                            self.stopMp3()
+                            homepod.load_config(tags)
+                            card_id = tags['identifier'][identifier]['yoto_airplay']
+                            airplay_target = tags['identifier'][identifier].get('homepod', None)
+                            logger.info('Yoto card %s -> HomePod %s' % (card_id, airplay_target or 'default'))
+                            urls = [u for _t, u in yoto_tracks.fetch_tracks(card_id)]
+                            if urls and homepod.stream_urls(urls, airplay_target):
+                                self.base.switch_pad(pad, self.LBLUE)
                             else:
                                 self.base.flash_pad(pad=pad, on_length=10, off_length=10,
                                                    pulse_count=6, colour=self.RED)
