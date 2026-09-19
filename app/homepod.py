@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import shutil
+import tempfile
 import threading
 from typing import Optional
 
@@ -114,37 +115,73 @@ def _is_url(source: str) -> bool:
 
 # pyatv decodes MP3/WAV/FLAC/OGG only (miniaudio); Yoto serves AAC in an MP4
 # container, which plays as silence. Remote sources are therefore transcoded
-# to MP3 through ffmpeg and piped into pyatv. MUSICFIG_TRANSCODE=no disables it.
+# by ffmpeg into short MP3 segment FILES that are streamed one after another:
+# the first segment is ready within a couple of seconds, and file playback is
+# the one pyatv input that cancels cleanly (a pipe-fed StreamReader never
+# finishes cancelling, so a lifted tag could not stop it - 2026-09-18).
+# MUSICFIG_TRANSCODE=no streams the URL as-is.
 FFMPEG = os.environ.get('MUSICFIG_FFMPEG') or 'ffmpeg'
+SEGMENT_SECONDS = int(os.environ.get('MUSICFIG_SEGMENT_SECONDS') or 60)
+SEGMENT_WAIT_S = 30.0   # how long to wait for ffmpeg to produce the next segment
 
 
 def _transcode_enabled() -> bool:
     return os.environ.get('MUSICFIG_TRANSCODE', 'yes').lower() not in ('no', '0', 'false')
 
 
-def ffmpeg_command(url: str) -> list:
-    """ffmpeg argv that turns any remote track into an MP3 stream on stdout."""
+def ffmpeg_command(url: str, out_dir: str) -> list:
+    """ffmpeg argv that turns any remote track into MP3 segments in out_dir."""
     return [FFMPEG, '-nostdin', '-loglevel', 'error', '-i', url, '-vn',
-            '-f', 'mp3', '-b:a', '192k', '-']
+            '-c:a', 'libmp3lame', '-b:a', '160k',
+            '-f', 'segment', '-segment_time', str(SEGMENT_SECONDS), '-reset_timestamps', '1',
+            os.path.join(out_dir, 'seg%05d.mp3')]
+
+
+def _segment_path(out_dir: str, index: int) -> str:
+    return os.path.join(out_dir, 'seg%05d.mp3' % index)
 
 
 async def _play_source(atv, source: str) -> None:
-    """Stream one source: local files and MP3 URLs directly; other remote
-    files through ffmpeg (killed on cancel or failure)."""
+    """Stream one source. Local files and, without ffmpeg, URLs go straight to
+    pyatv; other URLs are transcoded into segment files and played in order.
+    A segment is complete once the next one exists or ffmpeg has exited."""
     if not (_is_url(source) and _transcode_enabled() and shutil.which(FFMPEG)):
         if _is_url(source) and _transcode_enabled():
             logger.warning("ffmpeg not found; streaming the URL as-is (AAC will be silent)")
         await atv.stream.stream_file(source)
         return
+    out_dir = tempfile.mkdtemp(prefix='musicfig-airplay-')
     proc = await asyncio.create_subprocess_exec(
-        *ffmpeg_command(source), stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL)
+        *ffmpeg_command(source, out_dir),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
     try:
-        await atv.stream.stream_file(proc.stdout)
+        index = 0
+        while True:
+            path = _segment_path(out_dir, index)
+            waited = 0.0
+            # ready when the following segment has started, or ffmpeg is done
+            while not (os.path.exists(_segment_path(out_dir, index + 1)) or proc.returncode is not None):
+                if waited >= SEGMENT_WAIT_S:
+                    raise RuntimeError("ffmpeg produced no new segment for %.0fs" % SEGMENT_WAIT_S)
+                await asyncio.sleep(0.25)
+                waited += 0.25
+            if not os.path.exists(path) or os.path.getsize(path) == 0:
+                if proc.returncode is not None:
+                    if index == 0:
+                        raise RuntimeError("ffmpeg produced no audio (exit %s)" % proc.returncode)
+                    break  # all segments played
+                continue
+            await atv.stream.stream_file(path)
+            try:
+                os.remove(path)  # played; keep the temp dir small
+            except OSError:
+                pass
+            index += 1
     finally:
         if proc.returncode is None:
             proc.kill()
         await proc.wait()
+        shutil.rmtree(out_dir, ignore_errors=True)
 
 
 async def _stream_sources_async(sources: list, target: str, started: threading.Event,

@@ -15,13 +15,15 @@ _spec.loader.exec_module(hp)
 
 
 class TranscodeTests(unittest.TestCase):
-    def test_ffmpeg_command_is_mp3_to_stdout(self):
-        cmd = hp.ffmpeg_command("https://x.example/a.m4a?sig=1")
+    def test_ffmpeg_command_writes_mp3_segments(self):
+        cmd = hp.ffmpeg_command("https://x.example/a.m4a?sig=1", "/tmp/out")
         self.assertEqual(cmd[0], hp.FFMPEG)
         self.assertIn("-nostdin", cmd)
         self.assertEqual(cmd[cmd.index("-i") + 1], "https://x.example/a.m4a?sig=1")
-        self.assertEqual(cmd[cmd.index("-f") + 1], "mp3")
-        self.assertEqual(cmd[-1], "-")
+        self.assertEqual(cmd[cmd.index("-f") + 1], "segment")
+        self.assertEqual(cmd[cmd.index("-segment_time") + 1], str(hp.SEGMENT_SECONDS))
+        self.assertTrue(cmd[-1].endswith("seg%05d.mp3"))
+        self.assertEqual(hp._segment_path("/tmp/out", 3), os.path.join("/tmp/out", "seg00003.mp3"))
 
     def test_transcode_switch(self):
         with mock.patch.dict(os.environ, {"MUSICFIG_TRANSCODE": "no"}):
