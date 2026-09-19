@@ -165,6 +165,8 @@ WorkingDirectory=${SVC_HOME}
 Environment=PYTHONPATH=${CONF_DIR}
 Environment=MUSICFIG_TAGS_FILE=${CONF_DIR}/tags.yml
 Environment=MUSICFIG_ROOM=$(hostname -s)
+Environment=MUSICFIG_YOTO_TRACKS_URL=${MUSICFIG_YOTO_TRACKS_URL:-https://yoto-mcp-production.up.railway.app}
+Environment=MUSICFIG_YOTO_TRACKS_KEY_FILE=${CONF_DIR}/yoto-tracks.key
 Environment=MUSICFIG_LOG_FILE=${SVC_HOME}/musicfig.log
 Environment=MUSICFIG_CACHE_DIR=${SVC_HOME}/cache
 Environment=MUSICFIG_YOTO_TOKEN_FILE=${SVC_HOME}/yoto-tokens.json
@@ -205,6 +207,8 @@ cat <<HINTS
     copy MP3s into ${SVC_HOME}/music/
     sudo systemctl restart musicfig
 
+  Yoto -> HomePod (optional): put the Yoto MCP shared secret in ${CONF_DIR}/yoto-tracks.key
+    (root:${SVC_USER} 0640; scp it, never paste it) and map a tag with yoto_airplay: <card id>
   Spotify (optional): add CLIENT_ID/CLIENT_SECRET to ${CONF_DIR}/config.py
     then follow scripts/pi/README.md for the SSH port-forward OAuth dance.
 

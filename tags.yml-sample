@@ -23,6 +23,12 @@ identifier:
             kitchen:
                 airplay: null        # null drops the inherited key
                 mp3: peterpan.mp3
+    04112233445566:                 # made-up UID
+        # Yoto card (audiobook) streamed to this room's HomePod. Needs the
+        # Yoto MCP shared secret in /etc/musicfig/yoto-tracks.key.
+        name: Frozen (Yoto)
+        yoto_airplay: j5VA8
+        homepod: "@room"
     05631b62124:
         # LEGO minifigure. Play mp3 folder
         name: Peter Pan
