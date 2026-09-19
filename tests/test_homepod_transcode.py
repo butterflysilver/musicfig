@@ -21,8 +21,18 @@ class TranscodeTests(unittest.TestCase):
         self.assertIn("-nostdin", cmd)
         self.assertEqual(cmd[cmd.index("-i") + 1], "https://x.example/a.m4a?sig=1")
         self.assertEqual(cmd[cmd.index("-f") + 1], "segment")
-        self.assertEqual(cmd[cmd.index("-segment_time") + 1], str(hp.SEGMENT_SECONDS))
+        times = cmd[cmd.index("-segment_times") + 1].split(",")
+        self.assertEqual(times[:3], [str(hp.FIRST_SEGMENT_SECONDS),
+                                     str(hp.FIRST_SEGMENT_SECONDS + hp.SEGMENT_SECONDS),
+                                     str(hp.FIRST_SEGMENT_SECONDS + hp.SEGMENT_SECONDS + hp.LONG_SEGMENT_SECONDS)])
+        self.assertGreater(int(times[-1]), 7 * 3600)
         self.assertTrue(cmd[-1].endswith("seg%05d.mp3"))
+
+    def test_match_exact_then_partial(self):
+        devices = {"Guest Room HomePod": "A", "192.168.0.106": "A", "Office": "B"}
+        self.assertEqual(hp._match("Office", devices), "B")
+        self.assertEqual(hp._match("guest room", devices), "A")
+        self.assertIsNone(hp._match("Basement", devices))
         self.assertEqual(hp._segment_path("/tmp/out", 3), os.path.join("/tmp/out", "seg00003.mp3"))
 
     def test_transcode_switch(self):

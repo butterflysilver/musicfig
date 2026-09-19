@@ -415,6 +415,7 @@ class Base():
         except KeyError:
             switch_lights = True
         logger.info('Lightshow is %s' % switch_lights) #("disabled", "enabled")[switch_lights])
+        homepod.warm_up()  # discover AirPlay devices now, not on the first tap
         if switch_lights:
             self.base.switch_pad(0,self.GREEN)
         else:
