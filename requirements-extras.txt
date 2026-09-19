@@ -1,11 +1,7 @@
 # Optional integrations. scripts/pi/install.sh installs them by default
-# (MUSICFIG_EXTRAS=no skips them); pyatv pulls in miniaudio, which needs
-# build-essential and python3-dev to build on the Pi. By hand:
-#   sudo apt-get install -y build-essential python3-dev
-#   /opt/musicfig/.venv/bin/pip install -r requirements-extras.txt
-pyatv pulls in
-# miniaudio, which needs a C toolchain and python3-dev to build on the Pi.
-# Install on a machine that wants them:
+# (MUSICFIG_EXTRAS=no skips them). The AirPlay/Apple TV library pulls in
+# miniaudio, which needs build-essential and python3-dev to build on the Pi.
+# By hand:
 #   sudo apt-get install -y build-essential python3-dev
 #   /opt/musicfig/.venv/bin/pip install -r requirements-extras.txt
 pyatv            # Apple TV (Disney/Netflix/YouTube tags) and HomePod AirPlay
