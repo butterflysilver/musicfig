@@ -1,0 +1,2 @@
+# Shell scripts get scp'd to Raspberry Pis; a CRLF shebang line breaks them.
+*.sh text eol=lf

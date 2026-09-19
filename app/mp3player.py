@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import ctypes
+import time
 from enum import Enum
 import threading
 import queue
@@ -121,7 +122,23 @@ class ExtOut123(mpg123.Out123):
             dll_path = os.path.join(base_dir, 'libout123-0.dll')
             if os.path.exists(dll_path):
                 library_path = dll_path
-        super().__init__(library_path)
+        # Open the output with an explicit driver instead of libout123's
+        # auto-pick. With no audio sink present (Pi with the HDMI switched to
+        # another input) the auto-pick falls through to the JACK module, which
+        # segfaults the whole service; ALSA just returns an error we can handle.
+        driver = os.environ.get('MUSICFIG_AUDIO_DRIVER', 'alsa' if sys.platform.startswith('linux') else None)
+        device = os.environ.get('MUSICFIG_AUDIO_DEVICE') or None
+        self.handle = None
+        if not self._lib:
+            self._lib = self.init_library(library_path)
+        self._lib.out123_new.restype = ctypes.c_void_p
+        self.c_handle = self._lib.out123_new()
+        self.handle = ctypes.c_void_p(self.c_handle)
+        errcode = self._lib.out123_open(self.handle,
+                                        ctypes.c_char_p(driver.encode() if driver else None),
+                                        ctypes.c_char_p(device.encode() if device else None))
+        if errcode != mpg123.OK:
+            raise self.OpenException(self.plain_strerror(errcode))
 
     def pause(self):
         self._lib.out123_pause(self.handle)
@@ -131,6 +148,57 @@ class ExtOut123(mpg123.Out123):
 
     def stop(self):
         self._lib.out123_stop(self.handle)
+
+
+class AudioOutputError(Exception):
+    """No usable audio output right now (e.g. HDMI not connected)."""
+
+
+class LazyOut123:
+    """Opens the audio output on first use and survives it being absent.
+
+    A kiosk Pi may boot with nothing on its HDMI port (shared screen behind a
+    switch, TV off). Opening ALSA then fails, and musicfig must still run so
+    the pad, the lights and the wake-on-tag hook keep working; the output is
+    retried on every play attempt, so audio appears as soon as a sink does.
+    """
+    _RETRY_LOG_EVERY = 60  # seconds between "still no audio" warnings
+
+    def __init__(self):
+        self._out = None
+        self._last_warn = 0.0
+
+    def _ensure(self):
+        if self._out is None:
+            try:
+                self._out = ExtOut123()
+                logger.info("Audio output opened (%s)" % os.environ.get('MUSICFIG_AUDIO_DRIVER', 'alsa'))
+            except Exception as e:  # OpenException, LibInitializationException, OSError
+                now = time.monotonic()
+                if now - self._last_warn > self._RETRY_LOG_EVERY:
+                    logger.warning("No audio output yet (%s) - is a display/HDMI connected? Will retry on next play." % e)
+                    self._last_warn = now
+                raise AudioOutputError(str(e))
+        return self._out
+
+    def start(self, rate, channels, encoding):
+        return self._ensure().start(rate, channels, encoding)
+
+    def play(self, frame):
+        return self._ensure().play(frame)
+
+    def pause(self):
+        if self._out is not None:
+            self._out.pause()
+
+    def resume(self):
+        if self._out is not None:
+            self._out.resume()
+
+    def stop(self):
+        if self._out is not None:
+            self._out.stop()
+
 
 class PlayerState(Enum):
     UNINITALISED = 0
@@ -157,7 +225,7 @@ class Player:
 
     def __init__(self):
         self.mp3 = ExtMpg123()
-        self.out = ExtOut123()
+        self.out = LazyOut123()
 
         self.command_queue = queue.Queue(maxsize=1)
         self.event_queue = queue.Queue()
@@ -260,6 +328,8 @@ class Player:
 
                     if not self.command_queue.empty():
                         return
+            except AudioOutputError:
+                break
             except Empty:
                 break
         self._set_state(PlayerState.FINISHED)
@@ -271,21 +341,24 @@ class Player:
 
         to_frame = self.mp3.timeframe(self.to_time) + 1
 
-        for frame in self.mp3.iter_frames(self.out.start):
-            self.out.play(frame)
+        try:
+            for frame in self.mp3.iter_frames(self.out.start):
+                self.out.play(frame)
 
-            fc += 1
-            if fc > to_frame:
-                current_time = self.mp3.frame_seconds(self.mp3.tellframe())
-                self._set_state(PlayerState.PAUSED, current_time)
-                return
+                fc += 1
+                if fc > to_frame:
+                    current_time = self.mp3.frame_seconds(self.mp3.tellframe())
+                    self._set_state(PlayerState.PAUSED, current_time)
+                    return
 
-            if fc % self.update_per_frame_count == 0:
-                current_time = self.mp3.frame_seconds(self.mp3.tellframe())
-                self.event_queue.put((PlayerState.PLAYING, current_time))
+                if fc % self.update_per_frame_count == 0:
+                    current_time = self.mp3.frame_seconds(self.mp3.tellframe())
+                    self.event_queue.put((PlayerState.PLAYING, current_time))
 
-            if not self.command_queue.empty():
-                return
+                if not self.command_queue.empty():
+                    return
+        except AudioOutputError:
+            pass  # already logged; finish quietly, retried on the next tag
         self._set_state(PlayerState.FINISHED)
 
     def _set_state(self, state, param=None):

@@ -13,6 +13,7 @@ import app.tags as nfctags
 import binascii
 import logging
 import os
+import socket
 import shlex
 import subprocess
 import sys
@@ -36,21 +37,89 @@ import glob
 
 logger = logging.getLogger(__name__)
 
+# Which room this pad is in (the Pi's hostname unless MUSICFIG_ROOM says
+# otherwise); tags can behave differently per room, see tags.resolve_for_room.
+ROOM = os.environ.get('MUSICFIG_ROOM') or socket.gethostname().split('.')[0]
+
+# How often to look for a pad that is missing or was unplugged.
+RECONNECT_INTERVAL = 3.0
+
+# A pad that WAS working and has been gone this long makes the process exit
+# so systemd (Restart=always) brings it back with a fresh libusb context:
+# libusb's cached device list can miss a device that reappears without an
+# add event (seen with a sysfs unbind/bind on the game-room Pi, 2026-09-18).
+PAD_GONE_RESTART_AFTER = 60.0
+
+# libusb errnos that mean the pad is gone or wedged (unplugged, port reset,
+# hub dropped it, endpoint stalled): EIO, ENODEV, EPIPE. Anything else is
+# treated as transient.
+_PAD_GONE_ERRNOS = (5, 19, 32)
+
+
 class Dimensions():
+    """The LEGO Dimensions pad. Survives the pad being absent at start-up
+    or unplugged while running: every call is a no-op until reconnect()
+    brings it back, and nothing here spins or raises."""
 
     def __init__(self):
+        self.dev = None
+        self._retry_at = 0.0
+        self._last_error = None  # last failure logged, so repeats stay quiet
+        self._gone_since = None  # set when a working pad disappears
+        self.reconnect()
+
+    def reconnect(self):
+        """(Re)open the pad if it is not open. Returns True only at the
+        moment a pad comes online so the caller can restore its lights.
+        Attempts are spaced RECONNECT_INTERVAL apart and the wait is
+        slept here, so a missing pad costs no CPU."""
+        if self.dev is not None:
+            return False
+        now = time.monotonic()
+        if now < self._retry_at:
+            time.sleep(min(self._retry_at - now, 0.5))
+            return False
+        self._retry_at = now + RECONNECT_INTERVAL
         try:
             self.dev = self.init_usb()
         except (ValueError, usb.core.USBError) as e:
-            logger.error('Failed to initialize USB device: %s' % e)
             self.dev = None
+            if str(e) != self._last_error:
+                logger.warning('LEGO pad not available (%s); retrying every %ss'
+                               % (e, RECONNECT_INTERVAL))
+                self._last_error = str(e)
+            if self._gone_since is not None                     and now - self._gone_since > PAD_GONE_RESTART_AFTER:
+                logger.error('LEGO pad gone for %.0fs; exiting so systemd restarts '
+                             'musicfig with a fresh USB view' % (now - self._gone_since))
+                logging.shutdown()
+                os._exit(3)  # startLego may run off the main thread; be certain
+            return False
+        self._last_error = None
+        self._gone_since = None
+        logger.info('LEGO pad connected')
+        return True
+
+    def _lost(self, err):
+        """Forget a pad that stopped answering; reconnect() takes it from here."""
+        logger.warning('LEGO pad lost (%s); waiting for it to come back' % err)
+        try:
+            usb.util.dispose_resources(self.dev)
+        except Exception:
+            pass
+        self.dev = None
+        self._gone_since = time.monotonic()
+        self._retry_at = self._gone_since + RECONNECT_INTERVAL
+
+    @staticmethod
+    def _is_gone(err):
+        return (getattr(err, 'errno', None) in _PAD_GONE_ERRNOS
+                or 'No such device' in str(err))
 
     def init_usb(self):
         dev = usb.core.find(idVendor=0x0e6f, idProduct=0x0241)
 
         if dev is None:
-            logger.error('Lego Dimensions pad not found')
-            raise ValueError('Device not found')
+            raise ValueError('pad not found on USB')
 
         # Windows with WinUSB doesn't need kernel driver detach
         try:
@@ -84,10 +153,16 @@ class Dimensions():
         while len(message) < 32:
             message.append(0x00)
 
+        dev = self.dev  # snapshot: the main loop may drop it from another thread
+        if dev is None:
+            return
         try:
-            self.dev.write(1, message)
+            dev.write(1, message)
         except usb.core.USBError as e:
-            logger.warning('USB write error: %s' % e)
+            if self._is_gone(e):
+                self._lost(e)
+            else:
+                logger.warning('USB write error: %s' % e)
 
     def switch_pad(self, pad, colour):
         self.send_command([0x55, 0x06, 0xc0, 0x02, pad, colour[0], 
@@ -106,8 +181,11 @@ class Dimensions():
         return
 
     def update_nfc(self):
+        dev = self.dev
+        if dev is None:
+            return
         try:
-            inwards_packet = self.dev.read(0x81, 32, timeout = 100)
+            inwards_packet = dev.read(0x81, 32, timeout = 100)
             bytelist = list(inwards_packet)
             if not bytelist:
                 return
@@ -127,11 +205,42 @@ class Dimensions():
             # Normal timeout, no data available
             return
         except usb.core.USBError as e:
-            logger.warning('USB error: %s' % e)
+            if self._is_gone(e):
+                self._lost(e)
+            else:
+                logger.warning('USB error: %s' % e)
+                time.sleep(0.1)  # never spin on a repeating error
             return
         except Exception as e:
             logger.warning('NFC read error: %s' % e)
+            time.sleep(0.1)
             return
+
+def run_tag_hook(cmd, identifier, pad, timeout=30):
+    """Run MUSICFIG_ON_TAG_CMD in the background and log its outcome.
+
+    The command is a shell string from the unit's environment (operator
+    controlled, not tag controlled). It is waited on with a timeout so the
+    child is reaped and a hung hook cannot pile up.
+    """
+    def worker():
+        try:
+            result = subprocess.run(cmd, shell=True, timeout=timeout,
+                                    stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE)
+            if result.returncode == 0:
+                logger.info('tag %s on pad %s: on-tag hook ok' % (identifier, pad))
+            else:
+                err = result.stderr.decode('utf-8', 'replace').strip().splitlines()
+                logger.warning('on-tag hook exited %s: %s' % (
+                    result.returncode, err[-1] if err else '(no output)'))
+        except subprocess.TimeoutExpired:
+            logger.warning('on-tag hook timed out after %ss' % timeout)
+        except OSError as e:
+            logger.warning('on-tag hook failed to start: %s' % e)
+    threading.Thread(target=worker, name='on-tag-hook', daemon=True).start()
+
 
 class Base():
     def __init__(self):
@@ -295,7 +404,8 @@ class Base():
         mp3state = None
         nfc = nfctags.Tags()
         nfc.load_tags()
-        tags = nfc.tags
+        tags = nfctags.resolve_for_room(nfc.tags, ROOM)
+        logger.info('Pad room: %s' % ROOM)
         self.base = Dimensions()
         logger.info("Lego Dimensions base activated.")
         self.initMp3()
@@ -309,6 +419,12 @@ class Base():
         else:
             self.base.switch_pad(0,self.OFF)
         while True:
+            if self.base.reconnect():
+                # A pad just came (back) online: give it its idle colour.
+                if switch_lights:
+                    self.base.switch_pad(0, self.GREEN)
+                else:
+                    self.base.switch_pad(0, self.OFF)
             tag = self.base.update_nfc()
             if tag:
                 status = tag.split(':')[0]
@@ -322,15 +438,23 @@ class Base():
                         except AttributeError:
                             pass  # No lightshow thread running
                         self.pauseMp3()
+                        homepod.stop()
                         if spotify.activated():
                             spotify.pause()
                 if status == 'added':
+                    # Optional hook: any tag placed on the pad runs this
+                    # command (e.g. wake the room's wall display) on its own
+                    # thread, so a slow hook never delays the music and the
+                    # child is always reaped (no zombies).
+                    on_tag_cmd = os.environ.get('MUSICFIG_ON_TAG_CMD')
+                    if on_tag_cmd:
+                        run_tag_hook(on_tag_cmd, identifier, pad)
                     if switch_lights:
                         self.base.switch_pad(pad = pad, colour = self.BLUE)
 
-                    # Reload the tags config file
+                    # Reload the tags config file, resolved for this room
                     nfc.load_tags()
-                    tags = nfc.tags
+                    tags = nfctags.resolve_for_room(nfc.tags, ROOM)
                     try:
                         mp3_dir = tags['mp3_dir'] + '/'
                     except KeyError:
@@ -343,6 +467,7 @@ class Base():
                         self.lightshowThread.join()
                     except AttributeError:
                         pass  # No lightshow thread running
+                    homepod.stop()
 
                     if (identifier in tags['identifier']):
                         if current_tag is None:

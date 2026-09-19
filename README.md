@@ -1,4 +1,129 @@
-# Musicfig
+# Musicfig - Raspberry Pi fleet edition
+
+> **This is a fork of [meltaxa/musicfig](https://github.com/meltaxa/musicfig)** (MIT), extended so that a
+> LEGO Dimensions pad can live on every Raspberry Pi wall display in a house: tap a figure, and the room's
+> screen wakes, a song plays on the panel or streams to that room's HomePod, or a film launches on the
+> Apple TV. The same figure can do something different in every room.
+>
+> Everything in this fork was built with [Claude Code](https://claude.com/claude-code) working alongside the
+> owner, in the open: each feature shipped through a branch, a pull request, an adversarial review pass and a
+> test on real hardware before it was merged. The original project's documentation follows further down.
+
+## What the fork adds
+
+| Area | What it does |
+| --- | --- |
+| **Pi install recipe** | `scripts/pi/install.sh`: idempotent install on Raspberry Pi OS Lite (Bookworm/Trixie): dedicated `musicfig` system user, Python venv, systemd unit, udev rule for the pad, config in `/etc/musicfig`, music and logs in `/var/lib/musicfig`. Re-run to update. Coexists with a kiosk browser on the same Pi. |
+| **Wake the display on tap** | `MUSICFIG_ON_TAG_CMD` runs a command on its own thread whenever a tag lands, for example `gsd-screen on` to un-blank the room's wall panel. |
+| **Pad hot-plug** | The pad can be missing at boot or unplugged while running: one log line, quiet retries every 3 s, automatic reconnect, and the idle colour restored. No log spam, no crash. |
+| **Headless-safe audio** | The audio device opens lazily and a missing sink (HDMI switched away, no speaker) never brings the service down. |
+| **HomePod / AirPlay streaming** | `airplay:` tags stream a local file to a HomePod through [pyatv](https://pyatv.dev). Streaming runs on a background loop, so the pad keeps reading; lifting the figure stops the stream. |
+| **Room-aware tags** | Each Pi knows its room (`MUSICFIG_ROOM`, default: hostname). A tag can carry per-room overrides and `homepod: "@room"` targets that room's speaker. |
+| **Optional integrations** | Apple TV (Disney+, Netflix, YouTube deep links), HomePod, Hue Sync Box and Xbox are optional imports: a Pi without them still runs. `install.sh` installs the extras by default (`MUSICFIG_EXTRAS=no` to skip). |
+| **Tests** | `python -m unittest` (see `tests/`). |
+
+## How a house looks
+
+```
+                 ┌──────────── each room ────────────┐
+   figure ──tap──►  LEGO pad ──USB──► Raspberry Pi 5  │
+                 │                    │  musicfig     │
+                 │        ┌───────────┼────────────┐  │
+                 │        ▼           ▼            ▼  │
+                 │   wall panel   panel speaker   LAN │
+                 │   (wake/blank)  (MP3, ALSA)      │  │
+                 └──────────────────────────────────┼──┘
+                                                    ▼
+                          HomePod (AirPlay) · Apple TV (pyatv) · TV input switch
+```
+
+## Quick start on a Raspberry Pi
+
+```bash
+# on a fresh Raspberry Pi OS Lite (64-bit), as a user with sudo:
+git clone https://github.com/butterflysilver/musicfig.git
+cd musicfig
+sudo bash scripts/pi/install.sh          # MUSICFIG_BRANCH=<branch> to pin a branch
+sudo tail -f /var/lib/musicfig/musicfig.log
+```
+
+Put MP3s in `/var/lib/musicfig/music`, map tags in `/etc/musicfig/tags.yml`, tap a figure. The log prints the
+UID of every new tag it sees. Full details, including the wall-display wake hook and how it coexists with a
+kiosk, are in [`scripts/pi/README.md`](scripts/pi/README.md).
+
+## Configuration examples (demo data)
+
+All identifiers below are the upstream sample tags or made up; nothing here is a real household config.
+
+```yaml
+mp3_dir: /var/lib/musicfig/music
+lights: on
+
+# Which HomePod belongs to which room (room = MUSICFIG_ROOM, i.e. the Pi's hostname).
+room_homepods:
+  living-room: Living Room HomePod
+  playroom: Playroom HomePod
+
+identifier:
+  05631b62124:
+    name: Peter Pan
+    playlist: peterpan            # a folder of MP3s under mp3_dir, played on the panel speaker
+    shuffle: on
+
+  04ec806a0b4080:
+    name: Gramatik
+    mp3: justjammin.mp3
+
+  04aabbccddee80:                 # made-up UID
+    name: Sleepy song (room aware)
+    airplay: lullaby.mp3          # default: stream to this room's HomePod...
+    homepod: "@room"
+    rooms:
+      kitchen:                    # ...except in the kitchen, which has no HomePod:
+        airplay: null             # null drops an inherited key
+        mp3: lullaby.mp3          # play on the panel speaker instead
+
+  04ffeeddccbb81:                 # made-up UID
+    name: Cinderella
+    disney: https://www.disneyplus.com/movies/cinderella/VJPw3bEy9iHj   # launches on the Apple TV
+```
+
+Notes:
+
+* HomePods stream without pairing when the Home app's *Allow Speaker & TV Access* is set to *Everyone* (or
+  *Anyone on the Same Network*). Apple TVs need a one-time PIN pairing; see the pyatv docs.
+* A room with no entry in `room_homepods` makes `"@room"` resolve to nothing, so the tag falls back to its
+  other actions rather than playing on the wrong speaker.
+
+## Security and privacy
+
+* `tags.yml` and `config.py` are **git-ignored on purpose**: they hold pairing credentials and API tokens.
+  Never commit them, never paste them into an issue. Copy them to a Pi with `scp`.
+* The service runs as an unprivileged system user; the pad is the only USB device it can open (udev rule).
+* Nothing listens on the internet. The web UI binds to localhost; AirPlay and Apple TV traffic stays on the LAN.
+* The examples in this README are demo data. Real device names, addresses and identifiers live only in the
+  private config.
+
+## How this was built
+
+This fork is a working example of "AI pair-built" home automation:
+
+1. Each change starts as a spec in an issue tracker, is implemented on a branch by Claude Code, and goes
+   through a hostile self-review pass (a stop hook that asks for a senior-dev critique before finishing).
+2. Everything is verified on the actual hardware before it counts as done: pads unplugged mid-play,
+   Pis rebooted headless, HomePods listened to.
+3. Bugs found that way became fixes here: an unquoted systemd `Environment=` that split on spaces, a JACK
+   segfault when the HDMI sink vanished, a libusb device list that never sees a pad re-appear after a sysfs
+   rebind, and a pad that was simply faulty.
+
+Contributions welcome. The upstream project appears unmaintained; generic fixes from here are offered
+upstream as pull requests, and this fork is kept as the living version.
+
+---
+
+*Original project documentation follows.*
+
+# Musicfig (upstream README)
 <p/>
 Make your LEGO Minifigures play music using a Raspberry Pi and a LEGO Dimensions toy pad.
 <p align="center">
@@ -53,6 +178,9 @@ To play music you can use the following **options**:
 # Quick Install (without Spotify)
 
 This allows Musicfig to play in offline mode, by accessing local MP3 files. 
+
+**Raspberry Pi OS Bookworm/Trixie (venv, system user, systemd, coexists with the GSD kiosk):**
+use the maintained recipe in [`scripts/pi/README.md`](scripts/pi/README.md) instead of the steps below.
 
 Firstly, connect your LEGO Dimensions toy pad to the Raspberry Pi via the USB port.
 

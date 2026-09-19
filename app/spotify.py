@@ -46,7 +46,7 @@ def init_cache():
     """
     global connection
     global cursor
-    cache_dir = current_dir + '/.cache'
+    cache_dir = os.environ.get('MUSICFIG_CACHE_DIR') or current_dir + '/.cache'
     os.makedirs(cache_dir, exist_ok=True)
     connection = sqlite3.connect(cache_dir + '/songs.db', check_same_thread=False)
     cursor = connection.cursor()
