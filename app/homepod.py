@@ -15,6 +15,7 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 from typing import Optional
 
 # Optional dependency (requirements-extras.txt); see appletv.py.
@@ -70,12 +71,12 @@ def _get_loop() -> asyncio.AbstractEventLoop:
         return _loop
 
 
-async def _scan_devices() -> dict:
-    """Scan for AirPlay devices and cache results."""
+async def _scan_devices(force: bool = False) -> dict:
+    """Scan for AirPlay devices and cache results (force=True rescans)."""
     global _cached_devices
 
     with _cache_lock:
-        if _cached_devices:
+        if _cached_devices and not force:
             return _cached_devices
 
     logger.info("Scanning for AirPlay devices...")
@@ -93,20 +94,46 @@ async def _scan_devices() -> dict:
     return device_map
 
 
-async def _get_device(target: str):
-    """Get a pyatv device config by name or IP address."""
-    devices = await _scan_devices()
-
+def _match(target: str, devices: dict):
     if target in devices:
         return devices[target]
-
-    # Try partial match
-    for name, device in devices.items():
+    for name, device in devices.items():  # partial match
         if target.lower() in name.lower():
             return device
-
-    logger.warning(f"HomePod '{target}' not found")
     return None
+
+
+async def _get_device(target: str):
+    """Get a pyatv device config by name or IP address. A miss in the cached
+    list triggers one fresh scan (devices move, get renamed, or come online)."""
+    device = _match(target, await _scan_devices())
+    if device is None:
+        logger.info(f"HomePod '{target}' not in the cached device list; rescanning")
+        device = _match(target, await _scan_devices(force=True))
+    if device is None:
+        logger.warning(f"HomePod '{target}' not found")
+    return device
+
+
+def warm_up() -> None:
+    """Scan for AirPlay devices in the background now, so the first tap does
+    not pay the ~5 s discovery cost. Safe to call any time; no-op without pyatv."""
+    if pyatv is None:
+        return
+    try:
+        fut = asyncio.run_coroutine_threadsafe(_scan_devices(), _get_loop())
+    except Exception as e:
+        logger.warning(f"AirPlay warm-up could not start: {e}")
+        return
+
+    def _done(f):
+        exc = f.exception()
+        if exc:
+            logger.warning(f"AirPlay warm-up scan failed: {exc}")
+        else:
+            logger.info(f"AirPlay warm-up: {len({id(d) for d in f.result().values()})} device(s) cached")
+
+    fut.add_done_callback(_done)
 
 
 def _is_url(source: str) -> bool:
@@ -121,19 +148,32 @@ def _is_url(source: str) -> bool:
 # finishes cancelling, so a lifted tag could not stop it - 2026-09-18).
 # MUSICFIG_TRANSCODE=no streams the URL as-is.
 FFMPEG = os.environ.get('MUSICFIG_FFMPEG') or 'ffmpeg'
+# Every segment boundary costs a ~3 s pause (new RTSP session per file), so:
+# a 10 s first segment (fast start), a 60 s second one (ready before the
+# first ends), then long ones - one pause per ten minutes at most.
+FIRST_SEGMENT_SECONDS = int(os.environ.get('MUSICFIG_FIRST_SEGMENT_SECONDS') or 10)
 SEGMENT_SECONDS = int(os.environ.get('MUSICFIG_SEGMENT_SECONDS') or 60)
-SEGMENT_WAIT_S = 30.0   # how long to wait for ffmpeg to produce the next segment
+LONG_SEGMENT_SECONDS = int(os.environ.get('MUSICFIG_LONG_SEGMENT_SECONDS') or 600)
+MAX_TRACK_HOURS = 8  # segment boundaries are pre-computed up to this length
+SEGMENT_WAIT_S = 90.0   # how long to wait for ffmpeg to produce the next segment
 
 
 def _transcode_enabled() -> bool:
     return os.environ.get('MUSICFIG_TRANSCODE', 'yes').lower() not in ('no', '0', 'false')
 
 
+def segment_times() -> str:
+    """Cut points: short first segment, one regular segment, then long ones."""
+    end = MAX_TRACK_HOURS * 3600
+    second = FIRST_SEGMENT_SECONDS + SEGMENT_SECONDS
+    return ','.join([str(FIRST_SEGMENT_SECONDS)] + [str(t) for t in range(second, end, LONG_SEGMENT_SECONDS)])
+
+
 def ffmpeg_command(url: str, out_dir: str) -> list:
     """ffmpeg argv that turns any remote track into MP3 segments in out_dir."""
     return [FFMPEG, '-nostdin', '-loglevel', 'error', '-i', url, '-vn',
             '-c:a', 'libmp3lame', '-b:a', '160k',
-            '-f', 'segment', '-segment_time', str(SEGMENT_SECONDS), '-reset_timestamps', '1',
+            '-f', 'segment', '-segment_times', segment_times(), '-reset_timestamps', '1',
             os.path.join(out_dir, 'seg%05d.mp3')]
 
 
@@ -151,6 +191,7 @@ async def _play_source(atv, source: str) -> None:
         await atv.stream.stream_file(source)
         return
     out_dir = tempfile.mkdtemp(prefix='musicfig-airplay-')
+    t_start = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
         *ffmpeg_command(source, out_dir),
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
@@ -165,12 +206,15 @@ async def _play_source(atv, source: str) -> None:
                     raise RuntimeError("ffmpeg produced no new segment for %.0fs" % SEGMENT_WAIT_S)
                 await asyncio.sleep(0.25)
                 waited += 0.25
+            logger.debug("segment loop: index=%d files=%s ffmpeg_rc=%s" % (
+                index, sorted(os.listdir(out_dir)), proc.returncode))
             if not os.path.exists(path) or os.path.getsize(path) == 0:
                 if proc.returncode is not None:
                     if index == 0:
                         raise RuntimeError("ffmpeg produced no audio (exit %s)" % proc.returncode)
                     break  # all segments played
                 continue
+            logger.info("segment %d ready (%.1f s after start)" % (index, time.monotonic() - t_start))
             await atv.stream.stream_file(path)
             try:
                 os.remove(path)  # played; keep the temp dir small
