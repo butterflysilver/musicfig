@@ -602,7 +602,13 @@ class Base():
                             self.switchHdmiToAppleTv(tags)
                             youtube_url = tags['identifier'][identifier]['youtube']
                             logger.info('Launching YouTube: %s' % youtube_url)
-                            if appletv.launch_youtube(youtube_url):
+                            # appletv_cec_wake: sleep/wake the Apple TV first so the
+                            # TV switches to its input over HDMI-CEC (~8 s).
+                            # youtube_ok_delay: seconds after the launch to press
+                            # Select on the Apple TV (YouTube's account chooser).
+                            if appletv.launch_youtube(youtube_url,
+                                                      cec_wake=bool(tags.get('appletv_cec_wake', False)),
+                                                      ok_delay=tags.get('youtube_ok_delay', 0) or 0):
                                 self.base.switch_pad(pad, self.PURPLE)
                                 # Wait for YouTube to load, then press OK to play
                                 time.sleep(4)

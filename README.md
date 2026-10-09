@@ -111,7 +111,10 @@ Notes:
   `appletv_name` / `appletv_id` / `appletv_companion_credentials`); see the pyatv docs. The first app launch
   from a new device shows an "Open in ...?" prompt on the TV that must be confirmed with the real remote once;
   tvOS remembers it. YouTube links are sent as `youtube://www.youtube.com/watch?v=<id>` because tvOS refuses
-  plain https links.
+  plain https links. Two optional top-level keys for the `youtube:` action: `appletv_cec_wake: true` sleeps and
+  wakes the Apple TV before the launch so the TV turns on / switches to its input over HDMI-CEC (adds ~8 s);
+  `youtube_ok_delay: 4` presses Select on the Apple TV that many seconds after the launch (YouTube's account
+  chooser picks its first account).
 * A room with no entry in `room_homepods` makes `"@room"` resolve to nothing, so the tag falls back to its
   other actions rather than playing on the wrong speaker.
 
