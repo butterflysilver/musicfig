@@ -18,6 +18,7 @@ resolve_for_room = _mod.resolve_for_room
 BASE = {
     'mp3_dir': '/music',
     'room_homepods': {'guest-room': 'Guest Room HomePod', 'game-room': 'Basement (2)'},
+    'room_yoto_players': {'guest-room': "Momo's Library"},
     'identifier': {
         'aaaa': {
             'name': 'Peter Pan',
@@ -29,6 +30,8 @@ BASE = {
             },
         },
         'bbbb': {'name': 'Plain', 'mp3': 'plain.mp3'},
+        'dddd': {'name': 'Frozen on the Yoto', 'yoto': 'j5VA8', 'yoto_player': '@room'},
+        'eeee': {'name': 'Frozen on the mini', 'yoto': 'j5VA8', 'yoto_player': 'Grey mini'},
         'cccc': 'not-a-dict',
     },
 }
@@ -70,6 +73,15 @@ class ResolveForRoomTests(unittest.TestCase):
         resolve_for_room(BASE, 'kitchen')
         self.assertIn('rooms', BASE['identifier']['aaaa'])
         self.assertEqual(BASE['identifier']['aaaa']['homepod'], '@room')
+
+    def test_yoto_player_at_room_resolves_or_falls_back_to_online(self):
+        guest = resolve_for_room(BASE, 'guest-room')['identifier']
+        self.assertEqual(guest['dddd']['yoto_player'], "Momo's Library")
+        self.assertEqual(guest['dddd']['yoto'], 'j5VA8')
+        # the Yotos are portable: a room without an entry takes whichever is on
+        self.assertEqual(resolve_for_room(BASE, 'kitchen')['identifier']['dddd']['yoto_player'], '@online')
+        # an explicit player is left alone
+        self.assertEqual(resolve_for_room(BASE, 'kitchen')['identifier']['eeee']['yoto_player'], 'Grey mini')
 
     def test_empty_config(self):
         self.assertEqual(resolve_for_room({}, 'kitchen'), {})

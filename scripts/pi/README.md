@@ -82,13 +82,18 @@ recipe does not install PipeWire or PulseAudio; musicfig talks to ALSA directly.
    to Spotify, and the callback lands on the Pi. The log says `Spotify activated.`
 4. Tokens live in the process; a restart needs the dance again (upstream behaviour).
 
-## Yoto (phase 2)
+## Yoto
 
-`yoto-api` is installed and the service reads `/var/lib/musicfig/yoto-tokens.json`
-and `yoto-config.json` if they exist, but do not log in per Pi: the plan in
-[life-ops #62](https://github.com/butterflysilver/life-ops/issues/62) is to
-feed every Pi from the Railway yoto-mcp token family so refreshes happen in one
-place. Until then, `yoto:` entries in `tags.yml` log an error and do nothing else.
+A Pi never logs in to Yoto. Both Yoto actions go through the Railway Yoto MCP
+with the household shared secret in `/etc/musicfig/yoto-tracks.key`
+(`MUSICFIG_YOTO_TRACKS_URL` / `MUSICFIG_YOTO_TRACKS_KEY_FILE` in the unit):
+
+* `yoto_airplay: <card id>` - the card's signed track URLs, streamed to a HomePod.
+* `yoto: <card id>` - the card started on a real Yoto player
+  (`yoto_player`: id, name, `"@room"` via `room_yoto_players`, default `@online`).
+  Lifting the figure stops the player. The log says `Yoto player: 'Title'
+  playing on <name>`; a red flash with `... is offline` means the Yoto is asleep
+  or off Wi-Fi, `the shared key was rejected` means the key file is stale.
 
 ## Useful commands
 

@@ -29,6 +29,14 @@ identifier:
         name: Frozen (Yoto)
         yoto_airplay: j5VA8
         homepod: "@room"
+    04112233445577:                 # made-up UID
+        # The same card played on the real Yoto player ("card to device"):
+        # the Pi asks the Yoto MCP to start it; lifting the figure stops it.
+        # yoto_player is a player id, its name, "@room" (see room_yoto_players)
+        # or, left out, "@online" = whichever Yoto is switched on.
+        name: Frozen (on the Yoto)
+        yoto: j5VA8
+        yoto_player: "@room"
     05631b62124:
         # LEGO minifigure. Play mp3 folder
         name: Peter Pan
