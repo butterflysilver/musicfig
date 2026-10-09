@@ -47,7 +47,7 @@ class LaunchSequenceTests(unittest.TestCase):
     def run_seq(self, fake, **kw):
         async def fake_connect(name=None, ip=None):
             return fake
-        with mock.patch.object(appletv, "connect", fake_connect),              mock.patch.object(appletv.asyncio, "sleep", mock.AsyncMock()):
+        with mock.patch.object(appletv, "connect", fake_connect), mock.patch.object(appletv.asyncio, "sleep", mock.AsyncMock()):
             return asyncio.run(appletv.launch_sequence_async("youtube://x", **kw))
 
     def test_plain_launch(self):
@@ -62,6 +62,20 @@ class LaunchSequenceTests(unittest.TestCase):
         self.assertIn(("launch", "youtube://x"), fake.calls)
         self.assertEqual(fake.calls[-1], "select")
         self.assertLess(fake.calls.index(("launch", "youtube://x")), fake.calls.index("select"))
+
+    def test_failed_wake_still_launches(self):
+        fake = FakeAtv()
+
+        async def boom():
+            raise RuntimeError("no power support")
+        fake.turn_off = boom
+        self.assertTrue(self.run_seq(fake, cec_wake=True))
+        self.assertIn(("launch", "youtube://x"), fake.calls)
+
+    def test_bad_ok_delay_is_ignored(self):
+        fake = FakeAtv()
+        self.assertTrue(self.run_seq(fake, ok_delay="four"))
+        self.assertEqual(fake.calls, [("launch", "youtube://x")])
 
     def test_launch_failure_is_false(self):
         fake = FakeAtv()

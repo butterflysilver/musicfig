@@ -192,23 +192,38 @@ async def launch_sequence_async(url, cec_wake=False, ok_delay=0, atv_name=None, 
     """One connection: optionally sleep/wake for HDMI-CEC, launch the deep
     link, optionally press Select after ok_delay seconds (an app's account
     chooser). Returns True if the launch succeeded."""
+    try:
+        ok_delay = float(ok_delay or 0)
+    except (TypeError, ValueError):
+        logger.warning("youtube_ok_delay is not a number (%r); ignoring it", ok_delay)
+        ok_delay = 0.0
     atv = await connect(name=atv_name, ip=atv_ip)
     if not atv:
         return False
+    if cec_wake:
+        try:
+            woke = await _cec_wake(atv)
+        except Exception as e:
+            woke = False
+            logger.error(f"Apple TV sleep/wake failed: {e}")
+        if not woke:
+            # launching an app wakes the device anyway; only the input switch may be lost
+            logger.warning("Continuing with the launch without the HDMI-CEC wake")
     try:
-        if cec_wake and not await _cec_wake(atv):
-            return False
         logger.info(f"Launching: {url}")
         await atv.apps.launch_app(url)
         logger.info("Launch successful")
-        if ok_delay and float(ok_delay) > 0:
-            await asyncio.sleep(float(ok_delay))
-            await atv.remote_control.select()
-            logger.info("Apple TV: Select pressed")
-        return True
     except Exception as e:
         logger.error(f"Failed to launch app: {e}")
         return False
+    if ok_delay > 0:
+        try:
+            await asyncio.sleep(ok_delay)
+            await atv.remote_control.select()
+            logger.info("Apple TV: Select pressed")
+        except Exception as e:
+            logger.error(f"Failed to press Select on Apple TV: {e}")
+    return True
 
 
 def is_on_sync():

@@ -606,13 +606,17 @@ class Base():
                             # TV switches to its input over HDMI-CEC (~8 s).
                             # youtube_ok_delay: seconds after the launch to press
                             # Select on the Apple TV (YouTube's account chooser).
+                            ok_delay = tags.get('youtube_ok_delay', 0) or 0
                             if appletv.launch_youtube(youtube_url,
                                                       cec_wake=bool(tags.get('appletv_cec_wake', False)),
-                                                      ok_delay=tags.get('youtube_ok_delay', 0) or 0):
+                                                      ok_delay=ok_delay):
                                 self.base.switch_pad(pad, self.PURPLE)
-                                # Wait for YouTube to load, then press OK to play
-                                time.sleep(4)
-                                samsungtv.send_key("OK")
+                                if not ok_delay:
+                                    # Wait for YouTube to load, then press OK to play
+                                    # (the Apple TV's own Select covers this when
+                                    # youtube_ok_delay is set - never both)
+                                    time.sleep(4)
+                                    samsungtv.send_key("OK")
                             else:
                                 self.base.flash_pad(pad=pad, on_length=10, off_length=10,
                                                    pulse_count=6, colour=self.RED)
