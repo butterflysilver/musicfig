@@ -6,6 +6,13 @@ mp3_dir: /path/to/base/mp3/folder
 # Read once at startup: restart musicfig after changing it.
 lights: on
 
+# Apple TV (optional): pairing from pyatv, plus two knobs for the youtube: action.
+# appletv_name: Game Room
+# appletv_id: "AA:BB:CC:DD:EE:FF"
+# appletv_companion_credentials: "..."
+# appletv_cec_wake: true     # sleep/wake the Apple TV so the TV switches to its input (HDMI-CEC)
+# youtube_ok_delay: 4        # press Select N s after the launch (YouTube account chooser)
+
 # Room awareness (optional). Each Pi knows its room (MUSICFIG_ROOM, defaults
 # to the hostname). A tag can behave differently per room with a `rooms:`
 # block, and `homepod: "@room"` targets the HomePod listed for that room here.

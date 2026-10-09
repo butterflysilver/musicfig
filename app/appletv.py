@@ -171,6 +171,61 @@ async def turn_on_async(atv_name=None, atv_ip=None):
         return False
 
 
+async def _cec_wake(atv, timeout=25):
+    """Sleep and wake a connected Apple TV so HDMI-CEC makes the TV turn on
+    and switch to its input (an already-awake Apple TV launching an app does
+    not trigger that). Returns True once it reports awake again."""
+    await atv.power.turn_off()
+    await asyncio.sleep(4)
+    await atv.power.turn_on()
+    for _ in range(int(timeout)):
+        await asyncio.sleep(1)
+        if str(atv.power.power_state) == "PowerState.On":
+            await asyncio.sleep(2)  # let tvOS settle before a launch
+            logger.info("Apple TV woken for HDMI-CEC input switch")
+            return True
+    logger.error("Apple TV did not wake within %ss", timeout)
+    return False
+
+
+async def launch_sequence_async(url, cec_wake=False, ok_delay=0, atv_name=None, atv_ip=None):
+    """One connection: optionally sleep/wake for HDMI-CEC, launch the deep
+    link, optionally press Select after ok_delay seconds (an app's account
+    chooser). Returns True if the launch succeeded."""
+    try:
+        ok_delay = float(ok_delay or 0)
+    except (TypeError, ValueError):
+        logger.warning("youtube_ok_delay is not a number (%r); ignoring it", ok_delay)
+        ok_delay = 0.0
+    atv = await connect(name=atv_name, ip=atv_ip)
+    if not atv:
+        return False
+    if cec_wake:
+        try:
+            woke = await _cec_wake(atv)
+        except Exception as e:
+            woke = False
+            logger.error(f"Apple TV sleep/wake failed: {e}")
+        if not woke:
+            # launching an app wakes the device anyway; only the input switch may be lost
+            logger.warning("Continuing with the launch without the HDMI-CEC wake")
+    try:
+        logger.info(f"Launching: {url}")
+        await atv.apps.launch_app(url)
+        logger.info("Launch successful")
+    except Exception as e:
+        logger.error(f"Failed to launch app: {e}")
+        return False
+    if ok_delay > 0:
+        try:
+            await asyncio.sleep(ok_delay)
+            await atv.remote_control.select()
+            logger.info("Apple TV: Select pressed")
+        except Exception as e:
+            logger.error(f"Failed to press Select on Apple TV: {e}")
+    return True
+
+
 def is_on_sync():
     """Synchronous wrapper for is_on()."""
     return asyncio.run(is_on())
@@ -279,9 +334,12 @@ def youtube_deep_link(video):
     return f"youtube://www.youtube.com/watch?v={video_id}"
 
 
-def launch_youtube(video_id, atv_name=None):
-    """Launch YouTube video on Apple TV."""
-    return asyncio.run(launch_app(youtube_deep_link(video_id), atv_name=atv_name))
+def launch_youtube(video_id, atv_name=None, cec_wake=False, ok_delay=0):
+    """Launch a YouTube video on the Apple TV. cec_wake sleeps/wakes the Apple
+    TV first so the TV switches to its input; ok_delay > 0 presses Select that
+    many seconds after the launch (YouTube's account chooser)."""
+    return asyncio.run(launch_sequence_async(youtube_deep_link(video_id), cec_wake=cec_wake,
+                                             ok_delay=ok_delay, atv_name=atv_name))
 
 
 def launch_url(url, atv_name=None):
