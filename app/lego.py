@@ -477,13 +477,17 @@ class Base():
                         mp3_dir = os.path.dirname(os.path.abspath(__file__)) + '/../music/'
                     ##logger.debug(mp3_dir)
 
-                    # Stop any current songs and light shows
+                    # Stop any current songs and light shows (any new figure
+                    # replaces what is playing, on the HomePod and on the Yoto
+                    # alike - so a lifted Yoto figure never plays on after a
+                    # second figure was added beside it)
                     try:
                         self.lightshowThread.do_run = False
                         self.lightshowThread.join()
                     except AttributeError:
                         pass  # No lightshow thread running
                     homepod.stop()
+                    self.stopYoto()
 
                     if (identifier in tags['identifier']):
                         if current_tag is None:

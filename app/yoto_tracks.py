@@ -56,7 +56,7 @@ def configured() -> bool:
 def fetch_tracks(card_id: str) -> list:
     """Return [(title, url), ...] for the card's playable tracks, in order.
     Empty list (with a logged reason) on any failure - never raises."""
-    card_id = (card_id or "").strip()
+    card_id = str(card_id or "").strip()  # str(): YAML parses an all-digit id as int
     if not card_id:
         logger.error("Yoto tracks: no card id")
         return []
@@ -98,7 +98,7 @@ def fetch_tracks(card_id: str) -> list:
 
 
 def _player_path(player: Optional[str], action: str) -> str:
-    selector = (player or "").strip() or ANY_ONLINE_PLAYER
+    selector = str(player or "").strip() or ANY_ONLINE_PLAYER
     return f"{_base_url()}/api/players/{quote(selector, safe='')}/{action}"
 
 
@@ -140,7 +140,7 @@ def _post_player(player: Optional[str], action: str, body: Optional[dict] = None
 def play_card(card_id: str, player: Optional[str] = None) -> Optional[dict]:
     """Play a card on a Yoto player (id, name or @online; None = @online).
     Returns {"id", "name", "title"} of what is now playing, or None."""
-    card_id = (card_id or "").strip()
+    card_id = str(card_id or "").strip()
     if not card_id:
         logger.error("Yoto player: no card id")
         return None

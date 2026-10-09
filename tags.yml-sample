@@ -11,6 +11,11 @@ room_homepods:
     guest-room: Guest Room HomePod
     game-room: Basement (2)
 
+# Which Yoto player usually sits in which room, for yoto_player: "@room".
+# A room with no entry falls back to "@online" (the Yotos are carried around).
+room_yoto_players:
+    guest-room: Momo's Library
+
 # NFC tags have unique identifiers which are assigned "Spotify URI" actions.
 identifier:
     04a68312fe4a80:
