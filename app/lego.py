@@ -368,19 +368,33 @@ class Base():
         self.startMp3(list_mp3_to_play, mp3_dir, True)
         mp3state = 'PLAYING'
 
-    def stopYoto(self):
-        """Stop the Yoto player this pad last started, on its own thread so a
-        slow or unreachable MCP never stalls the pad loop (the lift must feel
-        instant). Nothing to do if no `yoto:` tag is playing."""
+    def stopYoto(self, wait=False):
+        """Stop the Yoto player this pad last started. Nothing to do if no
+        `yoto:` tag is playing.
+
+        A lift (wait=False) runs the stop on its own thread so a slow or
+        unreachable MCP never stalls the pad loop - the lift must feel instant.
+        A placement (wait=True: a figure was just put down) blocks until every
+        stop has been sent - this one and any lift's still in flight - so no
+        stop can race the new figure's play command and land after it,
+        silencing the card that was just started."""
+        pending = getattr(self, 'yoto_stop_thread', None)
+        if wait and pending is not None and pending.is_alive():
+            pending.join()
         player = getattr(self, 'yoto_player', None)
         if not player:
             return
         self.yoto_player = None
+        reason = 'figure replaced' if wait else 'figure lifted'
 
         def worker():
             if yoto_tracks.player_command(player, 'stop'):
-                logger.info('Yoto player stopped (figure lifted)')
-        threading.Thread(target=worker, name='yoto-stop', daemon=True).start()
+                logger.info('Yoto player stopped (%s)' % reason)
+        if wait:
+            worker()
+        else:
+            self.yoto_stop_thread = threading.Thread(target=worker, name='yoto-stop', daemon=True)
+            self.yoto_stop_thread.start()
 
     def switchHdmiToAppleTv(self, tags):
         """
@@ -480,14 +494,15 @@ class Base():
                     # Stop any current songs and light shows (any new figure
                     # replaces what is playing, on the HomePod and on the Yoto
                     # alike - so a lifted Yoto figure never plays on after a
-                    # second figure was added beside it)
+                    # second figure was added beside it). The Yoto stop waits:
+                    # sent in the background it could overtake the play below.
                     try:
                         self.lightshowThread.do_run = False
                         self.lightshowThread.join()
                     except AttributeError:
                         pass  # No lightshow thread running
                     homepod.stop()
-                    self.stopYoto()
+                    self.stopYoto(wait=True)
 
                     if (identifier in tags['identifier']):
                         if current_tag is None:
