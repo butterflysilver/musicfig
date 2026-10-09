@@ -267,10 +267,11 @@ def youtube_deep_link(video):
     video id, a watch URL, a youtu.be short link or an existing youtube:// link.
     """
     video = str(video or "").strip()
-    if video.startswith("youtube://"):
-        return video
     video_id = video
-    m = re.search(r"[?&]v=([A-Za-z0-9_-]{6,})", video) or re.search(r"youtu\.be/([A-Za-z0-9_-]{6,})", video)
+    m = (re.search(r"[?&]v=([A-Za-z0-9_-]{6,})", video)
+         or re.search(r"youtu\.be/([A-Za-z0-9_-]{6,})", video)
+         or re.search(r"youtube://(?:v|www\.youtube\.com/v)/([A-Za-z0-9_-]{6,})", video)
+         or re.search(r"youtube://([A-Za-z0-9_-]{6,})$", video))
     if m:
         video_id = m.group(1)
     if not video_id:

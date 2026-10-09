@@ -18,8 +18,10 @@ class YoutubeDeepLinkTests(unittest.TestCase):
     def test_short_link(self):
         self.assertEqual(youtube_deep_link("https://youtu.be/MmB9b5njVbA?si=abc"), self.WANT)
 
-    def test_existing_scheme_is_kept(self):
-        self.assertEqual(youtube_deep_link("youtube://v/MmB9b5njVbA"), "youtube://v/MmB9b5njVbA")
+    def test_other_youtube_scheme_forms_are_normalised(self):
+        self.assertEqual(youtube_deep_link("youtube://v/MmB9b5njVbA"), self.WANT)
+        self.assertEqual(youtube_deep_link("youtube://MmB9b5njVbA"), self.WANT)
+        self.assertEqual(youtube_deep_link("youtube://www.youtube.com/watch?v=MmB9b5njVbA"), self.WANT)
 
     def test_reset_config_drops_cached_connection(self):
         import app.appletv as appletv
