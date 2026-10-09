@@ -3,6 +3,7 @@ mp3_dir: /path/to/base/mp3/folder
 
 # Pad lights: on = green when idle + lightshow while MP3s play;
 # off = pads dark, a pad lights only while a figure is on it.
+# Read once at startup: restart musicfig after changing it.
 lights: on
 
 # Room awareness (optional). Each Pi knows its room (MUSICFIG_ROOM, defaults

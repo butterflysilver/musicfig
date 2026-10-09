@@ -482,8 +482,10 @@ class Base():
                     on_tag_cmd = os.environ.get('MUSICFIG_ON_TAG_CMD')
                     if on_tag_cmd:
                         run_tag_hook(on_tag_cmd, identifier, pad)
-                    if switch_lights:
-                        self.base.switch_pad(pad = pad, colour = self.BLUE)
+                    # Blue = "tap registered", in both lights modes; actions
+                    # that have a colour of their own replace it below, and
+                    # the lift restores the idle colour.
+                    self.base.switch_pad(pad = pad, colour = self.BLUE)
 
                     # Reload the tags config file, resolved for this room
                     nfc.load_tags()
