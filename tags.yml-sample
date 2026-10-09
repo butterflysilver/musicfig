@@ -11,6 +11,11 @@ room_homepods:
     guest-room: Guest Room HomePod
     game-room: Basement (2)
 
+# Which Yoto player usually sits in which room, for yoto_player: "@room".
+# A room with no entry falls back to "@online" (the Yotos are carried around).
+room_yoto_players:
+    guest-room: Momo's Library
+
 # NFC tags have unique identifiers which are assigned "Spotify URI" actions.
 identifier:
     04a68312fe4a80:
@@ -29,6 +34,14 @@ identifier:
         name: Frozen (Yoto)
         yoto_airplay: j5VA8
         homepod: "@room"
+    04112233445577:                 # made-up UID
+        # The same card played on the real Yoto player ("card to device"):
+        # the Pi asks the Yoto MCP to start it; lifting the figure stops it.
+        # yoto_player is a player id, its name, "@room" (see room_yoto_players)
+        # or, left out, "@online" = whichever Yoto is switched on.
+        name: Frozen (on the Yoto)
+        yoto: j5VA8
+        yoto_player: "@room"
     05631b62124:
         # LEGO minifigure. Play mp3 folder
         name: Peter Pan

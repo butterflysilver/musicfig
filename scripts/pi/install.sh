@@ -18,7 +18,7 @@
 # Layout:
 #   /opt/musicfig            code checkout + .venv (owner musicfig)
 #   /etc/musicfig            config.py (Spotify secrets, 0640) + tags.yml
-#   /var/lib/musicfig        service home: music/, cache/, musicfig.log, Yoto tokens
+#   /var/lib/musicfig        service home: music/, cache/, musicfig.log
 #
 set -euo pipefail
 
@@ -169,8 +169,6 @@ Environment=MUSICFIG_YOTO_TRACKS_URL=${MUSICFIG_YOTO_TRACKS_URL:-https://yoto-mc
 Environment=MUSICFIG_YOTO_TRACKS_KEY_FILE=${CONF_DIR}/yoto-tracks.key
 Environment=MUSICFIG_LOG_FILE=${SVC_HOME}/musicfig.log
 Environment=MUSICFIG_CACHE_DIR=${SVC_HOME}/cache
-Environment=MUSICFIG_YOTO_TOKEN_FILE=${SVC_HOME}/yoto-tokens.json
-Environment=MUSICFIG_YOTO_CONFIG_FILE=${SVC_HOME}/yoto-config.json
 ${ON_TAG_ENV}
 ExecStart=${VENV_DIR}/bin/python ${APP_DIR}/run.py
 Restart=always
@@ -207,8 +205,10 @@ cat <<HINTS
     copy MP3s into ${SVC_HOME}/music/
     sudo systemctl restart musicfig
 
-  Yoto -> HomePod (optional): put the Yoto MCP shared secret in ${CONF_DIR}/yoto-tracks.key
-    (root:${SVC_USER} 0640; scp it, never paste it) and map a tag with yoto_airplay: <card id>
+  Yoto (optional): put the Yoto MCP shared secret in ${CONF_DIR}/yoto-tracks.key
+    (root:${SVC_USER} 0640; scp it, never paste it), then map a tag with
+    yoto_airplay: <card id> (stream to the room's HomePod) or yoto: <card id>
+    (play on the Yoto player itself; yoto_player: "@room" + room_yoto_players).
   Spotify (optional): add CLIENT_ID/CLIENT_SECRET to ${CONF_DIR}/config.py
     then follow scripts/pi/README.md for the SSH port-forward OAuth dance.
 

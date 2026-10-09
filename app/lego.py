@@ -8,7 +8,6 @@ import app.huesyncbox as huesyncbox
 import app.samsungtv as samsungtv
 import app.homepod as homepod
 import app.xboxctl as xboxctl
-import app.yoto as yoto
 import app.yoto_tracks as yoto_tracks
 import app.tags as nfctags
 import binascii
@@ -369,6 +368,20 @@ class Base():
         self.startMp3(list_mp3_to_play, mp3_dir, True)
         mp3state = 'PLAYING'
 
+    def stopYoto(self):
+        """Stop the Yoto player this pad last started, on its own thread so a
+        slow or unreachable MCP never stalls the pad loop (the lift must feel
+        instant). Nothing to do if no `yoto:` tag is playing."""
+        player = getattr(self, 'yoto_player', None)
+        if not player:
+            return
+        self.yoto_player = None
+
+        def worker():
+            if yoto_tracks.player_command(player, 'stop'):
+                logger.info('Yoto player stopped (figure lifted)')
+        threading.Thread(target=worker, name='yoto-stop', daemon=True).start()
+
     def switchHdmiToAppleTv(self, tags):
         """
         Switch HDMI input to Apple TV using available methods.
@@ -441,6 +454,7 @@ class Base():
                             pass  # No lightshow thread running
                         self.pauseMp3()
                         homepod.stop()
+                        self.stopYoto()
                         if spotify.activated():
                             spotify.pause()
                 if status == 'added':
@@ -463,13 +477,17 @@ class Base():
                         mp3_dir = os.path.dirname(os.path.abspath(__file__)) + '/../music/'
                     ##logger.debug(mp3_dir)
 
-                    # Stop any current songs and light shows
+                    # Stop any current songs and light shows (any new figure
+                    # replaces what is playing, on the HomePod and on the Yoto
+                    # alike - so a lifted Yoto figure never plays on after a
+                    # second figure was added beside it)
                     try:
                         self.lightshowThread.do_run = False
                         self.lightshowThread.join()
                     except AttributeError:
                         pass  # No lightshow thread running
                     homepod.stop()
+                    self.stopYoto()
 
                     if (identifier in tags['identifier']):
                         if current_tag is None:
@@ -633,15 +651,18 @@ class Base():
                             else:
                                 self.base.flash_pad(pad=pad, on_length=10, off_length=10,
                                                    pulse_count=6, colour=self.RED)
-                        # Yoto player - play card from library
+                        # Yoto card -> the real Yoto player ("card to device"):
+                        # the Yoto MCP starts the card on the player named by
+                        # yoto_player (id, name, "@room" or, by default, whichever
+                        # player is online). Lifting the figure stops it.
                         if ('yoto' in tags['identifier'][identifier]):
                             self.stopMp3()
-                            yoto.load_config(tags)
                             card_id = tags['identifier'][identifier]['yoto']
-                            # Optional: specify which player
-                            player_id = tags['identifier'][identifier].get('yoto_player', None)
-                            logger.info('Playing Yoto card: %s' % card_id)
-                            if yoto.sync_play_card(card_id, player_id):
+                            player = tags['identifier'][identifier].get('yoto_player', None)
+                            logger.info('Yoto card %s -> Yoto player %s' % (card_id, player or '@online'))
+                            playing = yoto_tracks.play_card(card_id, player)
+                            if playing:
+                                self.yoto_player = playing['id']
                                 self.base.switch_pad(pad, self.PINK)  # Pink for Yoto
                             else:
                                 self.base.flash_pad(pad=pad, on_length=10, off_length=10,

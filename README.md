@@ -19,6 +19,7 @@
 | **Headless-safe audio** | The audio device opens lazily and a missing sink (HDMI switched away, no speaker) never brings the service down. |
 | **HomePod / AirPlay streaming** | `airplay:` tags stream a local file to a HomePod through [pyatv](https://pyatv.dev). Streaming runs on a background loop, so the pad keeps reading; lifting the figure stops the stream. |
 | **Yoto card to HomePod** | `yoto_airplay: <card id>` streams a Yoto card (audiobooks, MYO uploads) to the room's HomePod. The Pi asks a small Yoto MCP service for the card's signed track URLs at tap time (one shared secret per household, never a Yoto token on the Pi) and pyatv streams them in order (Yoto serves AAC, so the Pi transcodes into one-minute MP3 segments with ffmpeg and plays them back to back). Lift the figure to stop. |
+| **Yoto card on the Yoto itself** | `yoto: <card id>` plays the card on a real Yoto player ("card to device"): the Pi asks the same Yoto MCP to start it on `yoto_player` (a player id, its name, `"@room"` via `room_yoto_players`, or by default whichever player is online). Lift the figure to stop. No Yoto token on the Pi. |
 | **Room-aware tags** | Each Pi knows its room (`MUSICFIG_ROOM`, default: hostname). A tag can carry per-room overrides and `homepod: "@room"` targets that room's speaker. |
 | **Optional integrations** | Apple TV (Disney+, Netflix, YouTube deep links), HomePod, Hue Sync Box and Xbox are optional imports: a Pi without them still runs. `install.sh` installs the extras by default (`MUSICFIG_EXTRAS=no` to skip). |
 | **Tests** | `python -m unittest` (see `tests/`). |
@@ -65,6 +66,11 @@ room_homepods:
   living-room: Living Room HomePod
   playroom: Playroom HomePod
 
+# Which Yoto player usually lives in which room, for `yoto_player: "@room"`.
+# A room without an entry falls back to "@online" (the players are portable).
+room_yoto_players:
+  playroom: Playroom Yoto
+
 identifier:
   05631b62124:
     name: Peter Pan
@@ -87,6 +93,11 @@ identifier:
   04ffeeddccbb81:                 # made-up UID
     name: Cinderella
     disney: https://www.disneyplus.com/movies/cinderella/VJPw3bEy9iHj   # launches on the Apple TV
+
+  04aabbccdd0081:                 # made-up UID
+    name: Goodnight Moon (on the Yoto)
+    yoto: abc12                   # a card id from the Yoto library, played on the Yoto player
+    yoto_player: "@room"          # or a player name / id; omit for "whichever is online"
 ```
 
 Notes:

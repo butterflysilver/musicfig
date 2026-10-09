@@ -56,10 +56,20 @@ def resolve_for_room(tags, room):
 
     A room with no HomePod (or no entry) makes "@room" resolve to nothing, so
     the airplay action is dropped rather than sent to the wrong speaker.
+
+    The same for a real Yoto player (`yoto: <card id>` plays the card on the
+    Yoto itself through the Yoto MCP):
+        room_yoto_players:
+          guest-room: Momo's Library     # a player id or its name
+    A tag with `yoto_player: "@room"` targets that room's player. Unlike a
+    HomePod, a Yoto is carried around, so a room with no entry falls back to
+    "@online" (whichever player is switched on), which is also the default
+    when the tag names no player at all.
     """
     if not tags:
         return tags
     room_homepods = tags.get('room_homepods') or {}
+    room_yoto_players = tags.get('room_yoto_players') or {}
     out = dict(tags)
     resolved = {}
     for ident, entry in (tags.get('identifier') or {}).items():
@@ -78,6 +88,8 @@ def resolve_for_room(tags, room):
             else:
                 merged.pop('homepod', None)
                 merged.pop('airplay', None)
+        if merged.get('yoto_player') == '@room':
+            merged['yoto_player'] = room_yoto_players.get(room) or '@online'
         resolved[ident] = merged
     out['identifier'] = resolved
     return out
