@@ -443,17 +443,16 @@ class Base():
             switch_lights = True
         logger.info('Lightshow is %s' % switch_lights) #("disabled", "enabled")[switch_lights])
         homepod.warm_up()  # discover AirPlay devices now, not on the first tap
-        if switch_lights:
-            self.base.switch_pad(0,self.GREEN)
-        else:
-            self.base.switch_pad(0,self.OFF)
+        # `lights: true`  - pads glow green when idle, lightshow while music plays.
+        # `lights: false` - pads stay dark; a pad only lights while a figure is
+        #                   on it (the action's colour), and goes dark again when
+        #                   the figure is lifted.
+        idle_colour = self.GREEN if switch_lights else self.OFF
+        self.base.switch_pad(0, idle_colour)
         while True:
             if self.base.reconnect():
                 # A pad just came (back) online: give it its idle colour.
-                if switch_lights:
-                    self.base.switch_pad(0, self.GREEN)
-                else:
-                    self.base.switch_pad(0, self.OFF)
+                self.base.switch_pad(0, idle_colour)
             tag = self.base.update_nfc()
             if tag:
                 status = tag.split(':')[0]
@@ -471,6 +470,10 @@ class Base():
                         self.stopYoto()
                         if spotify.activated():
                             spotify.pause()
+                    # The lifted figure's pad goes back to idle, whatever
+                    # colour its action gave it (after the lightshow, which
+                    # blanks the pads as it ends).
+                    self.base.switch_pad(pad, idle_colour)
                 if status == 'added':
                     # Optional hook: any tag placed on the pad runs this
                     # command (e.g. wake the room's wall display) on its own
