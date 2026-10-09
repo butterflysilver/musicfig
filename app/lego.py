@@ -374,9 +374,13 @@ class Base():
 
         A lift (wait=False) runs the stop on its own thread so a slow or
         unreachable MCP never stalls the pad loop - the lift must feel instant.
-        A replacement (wait=True: another figure was just placed) blocks until
-        the stop has been sent, so it cannot race the new figure's play command
-        and land after it, silencing the card that was just started."""
+        A placement (wait=True: a figure was just put down) blocks until every
+        stop has been sent - this one and any lift's still in flight - so no
+        stop can race the new figure's play command and land after it,
+        silencing the card that was just started."""
+        pending = getattr(self, 'yoto_stop_thread', None)
+        if wait and pending is not None and pending.is_alive():
+            pending.join()
         player = getattr(self, 'yoto_player', None)
         if not player:
             return
@@ -389,7 +393,8 @@ class Base():
         if wait:
             worker()
         else:
-            threading.Thread(target=worker, name='yoto-stop', daemon=True).start()
+            self.yoto_stop_thread = threading.Thread(target=worker, name='yoto-stop', daemon=True)
+            self.yoto_stop_thread.start()
 
     def switchHdmiToAppleTv(self, tags):
         """

@@ -46,11 +46,31 @@ class StopYotoTests(unittest.TestCase):
                 self.base.stopYoto()
                 self.assertIsNone(self.base.yoto_player)  # cleared immediately
                 self.assertTrue(done.wait(2), 'stop never sent')
-                for t in threading.enumerate():
-                    if t.name == 'yoto-stop':
-                        t.join(2)
+                self.base.yoto_stop_thread.join(2)
         self.assertEqual(calls, [('y2mvs76l93Qme2esTgJ5ZY5Q', 'stop', 'yoto-stop')])
         self.assertIn('Yoto player stopped (figure lifted)', logs.output[-1])
+
+    def test_placement_waits_for_a_lift_still_in_flight(self):
+        # lift (background stop, slow MCP) then the figure goes straight back on:
+        # the placement must not return - and so must not play - until that
+        # stop has been sent, or the stop could silence the new play.
+        release = threading.Event()
+        order = []
+
+        def cmd(player, action):
+            release.wait(2)
+            order.append('stop sent')
+            return True
+
+        with mock.patch.object(lego.yoto_tracks, 'player_command', side_effect=cmd):
+            self.base.stopYoto()                       # lift: in flight, blocked on `release`
+            lifted = self.base.yoto_stop_thread
+            self.assertTrue(lifted.is_alive())
+            threading.Timer(0.2, release.set).start()
+            self.base.stopYoto(wait=True)              # placement: nothing of its own to stop
+            order.append('placement returned')
+        self.assertEqual(order, ['stop sent', 'placement returned'])
+        self.assertFalse(lifted.is_alive())
 
     def test_failed_stop_is_not_logged_as_stopped(self):
         with mock.patch.object(lego.yoto_tracks, 'player_command', return_value=False):
