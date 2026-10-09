@@ -176,8 +176,10 @@ To play music you can use the following **options**:
 # Feature list
 
 * Support LEGO Dimensions toy pads for PlayStation and Wii.
-* A lightshow will display on the LEGO Dimensions pad during song play.
-    * The lightshow can be enabled or disabled via the tags.yml file. Default: lights = on.
+* Pad lights: with `lights: on` (default) the pads glow green when idle and a
+  lightshow plays during MP3 playback. With `lights: off` the pads stay dark and a
+  pad only lights (in its action's colour) while a figure is on it - it goes dark
+  again when the figure is lifted.
 * Play MP3 files.
 * Play Spotify music.
     * The Musicfig web application will show in real time the currently playing Spotify track's album art.
