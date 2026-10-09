@@ -5,6 +5,7 @@ Enables launching Disney+, Netflix, and other streaming content via deep links.
 """
 
 import asyncio
+import re
 import logging
 # Optional dependency: pyatv is in requirements-extras.txt, not requirements.txt
 # (it needs a compiler on the Pi). Without it the Apple TV tag actions are
@@ -257,14 +258,27 @@ def launch_netflix(content_id, atv_name=None):
     return asyncio.run(launch_app(url, atv_name=atv_name))
 
 
+def youtube_deep_link(video):
+    """The link form tvOS actually opens in the YouTube app.
+
+    tvOS (26, Apple TV 4K) rejects plain https://www.youtube.com/... and
+    https://youtu.be/... with "Open URL failed"; the app's own scheme,
+    youtube://www.youtube.com/watch?v=<id>, opens the video. Accepts a bare
+    video id, a watch URL, a youtu.be short link or an existing youtube:// link.
+    """
+    video = str(video or "").strip()
+    if video.startswith("youtube://"):
+        return video
+    video_id = video
+    m = re.search(r"[?&]v=([A-Za-z0-9_-]{6,})", video) or re.search(r"youtu\.be/([A-Za-z0-9_-]{6,})", video)
+    if m:
+        video_id = m.group(1)
+    return f"youtube://www.youtube.com/watch?v={video_id}"
+
+
 def launch_youtube(video_id, atv_name=None):
     """Launch YouTube video on Apple TV."""
-    if video_id.startswith("http"):
-        url = video_id
-    else:
-        url = f"https://www.youtube.com/watch?v={video_id}"
-
-    return asyncio.run(launch_app(url, atv_name=atv_name))
+    return asyncio.run(launch_app(youtube_deep_link(video_id), atv_name=atv_name))
 
 
 def launch_url(url, atv_name=None):
