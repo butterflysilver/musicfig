@@ -189,7 +189,7 @@ async def launch_app(url_or_bundle_id, atv_name=None, atv_ip=None):
         url_or_bundle_id: Either a deep link URL or app bundle ID
             - Disney+: "https://www.disneyplus.com/video/{content_id}"
             - Netflix: "https://www.netflix.com/title/{id}"
-            - YouTube: "https://www.youtube.com/watch?v={id}"
+            - YouTube: "youtube://www.youtube.com/watch?v={id}" (see youtube_deep_link)
             - Bundle ID: "com.disney.disneyplus"
         atv_name: Name of Apple TV to connect to (optional)
         atv_ip: IP address of Apple TV (optional)
@@ -273,6 +273,8 @@ def youtube_deep_link(video):
     m = re.search(r"[?&]v=([A-Za-z0-9_-]{6,})", video) or re.search(r"youtu\.be/([A-Za-z0-9_-]{6,})", video)
     if m:
         video_id = m.group(1)
+    if not video_id:
+        logger.warning("YouTube tag has no video id")
     return f"youtube://www.youtube.com/watch?v={video_id}"
 
 
@@ -297,9 +299,18 @@ _config_loaded = False
 
 
 def reset_config():
-    """Reset config loaded flag to allow reloading."""
-    global _config_loaded
+    """Forget the loaded config AND the cached connection, so the next action
+    reconnects with whatever credentials tags.yml holds now (a connection
+    made before a pairing existed would otherwise be reused without them)."""
+    global _config_loaded, _atv, _atv_name
     _config_loaded = False
+    if _atv is not None:
+        try:
+            _atv.close()
+        except Exception:
+            pass
+        _atv = None
+        _atv_name = None
 
 
 def load_config(tags):

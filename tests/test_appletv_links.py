@@ -21,6 +21,22 @@ class YoutubeDeepLinkTests(unittest.TestCase):
     def test_existing_scheme_is_kept(self):
         self.assertEqual(youtube_deep_link("youtube://v/MmB9b5njVbA"), "youtube://v/MmB9b5njVbA")
 
+    def test_reset_config_drops_cached_connection(self):
+        import app.appletv as appletv
+
+        class FakeAtv:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        fake = FakeAtv()
+        appletv._atv, appletv._atv_name, appletv._config_loaded = fake, "Game Room", True
+        appletv.reset_config()
+        self.assertTrue(fake.closed)
+        self.assertIsNone(appletv._atv)
+        self.assertFalse(appletv._config_loaded)
+
     def test_whitespace_trimmed(self):
         self.assertEqual(youtube_deep_link("  MmB9b5njVbA \n"), self.WANT)
 
