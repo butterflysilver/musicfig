@@ -94,6 +94,10 @@ identifier:
     name: Cinderella
     disney: https://www.disneyplus.com/movies/cinderella/VJPw3bEy9iHj   # launches on the Apple TV
 
+  04112233445581:                 # made-up UID
+    name: Creeper
+    youtube: https://www.youtube.com/watch?v=dQw4w9WgXcQ   # any watch / youtu.be link or a bare video id
+
   04aabbccdd0081:                 # made-up UID
     name: Goodnight Moon (on the Yoto)
     yoto: abc12                   # a card id from the Yoto library, played on the Yoto player
@@ -103,7 +107,11 @@ identifier:
 Notes:
 
 * HomePods stream without pairing when the Home app's *Allow Speaker & TV Access* is set to *Everyone* (or
-  *Anyone on the Same Network*). Apple TVs need a one-time PIN pairing; see the pyatv docs.
+  *Anyone on the Same Network*). Apple TVs need a one-time PIN pairing (Companion protocol; put the result in
+  `appletv_name` / `appletv_id` / `appletv_companion_credentials`); see the pyatv docs. The first app launch
+  from a new device shows an "Open in ...?" prompt on the TV that must be confirmed with the real remote once;
+  tvOS remembers it. YouTube links are sent as `youtube://www.youtube.com/watch?v=<id>` because tvOS refuses
+  plain https links.
 * A room with no entry in `room_homepods` makes `"@room"` resolve to nothing, so the tag falls back to its
   other actions rather than playing on the wrong speaker.
 

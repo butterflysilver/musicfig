@@ -487,8 +487,12 @@ class Base():
                     # the lift restores the idle colour.
                     self.base.switch_pad(pad = pad, colour = self.BLUE)
 
-                    # Reload the tags config file, resolved for this room
-                    nfc.load_tags()
+                    # Reload the tags config file, resolved for this room.
+                    # A changed file also invalidates the Apple TV settings
+                    # cached from it (name / id / pairing credentials), so a
+                    # pairing added while running is picked up on the next tap.
+                    if nfc.load_tags() is not None:
+                        appletv.reset_config()
                     tags = nfctags.resolve_for_room(nfc.tags, ROOM)
                     try:
                         mp3_dir = tags['mp3_dir'] + '/'
