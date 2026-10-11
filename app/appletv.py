@@ -42,6 +42,12 @@ AIRPLAY_CREDENTIALS = None
 # Base URL of that server (http://<apple-tv-ip>[:port]); None = not used.
 DEEPLINK_SERVER = None
 DEEPLINK_TIMEOUT = 4  # seconds; the server is on the LAN, anything slower is "not running"
+# tvOS suspends the app (and its server) as soon as another app is in front,
+# so a refused connection is normal: bring the app to the front over pyatv
+# (the author's own Shortcut starts with "Open App on Apple TV: DeepLink"),
+# give it a moment, and ask again. Bundle id from the Game Room app list.
+DEEPLINK_APP_ID = "com.celerity.DeepLink"
+DEEPLINK_FOREGROUND_WAIT = 2.5
 
 
 async def scan_for_apple_tvs(timeout=5):
@@ -523,26 +529,49 @@ def launch_deeplink(target, atv_name=None, cec_wake=False, ok_delay=0, ok_key="s
         ok_delay = 0.0
     if DEEPLINK_SERVER:
         url = deeplink_open_url(target)
-        try:
-            status, body = _deeplink_get(url, DEEPLINK_TIMEOUT)
-            if 200 <= status < 300:
-                logger.info(f"Deeplink app opened {target}")
-                if ok_delay > 0:
-                    asyncio.run(press_after_async(ok_delay, ok_key, atv_name=atv_name))
-                return True
-            logger.warning(f"Deeplink server answered {status} for {target}: {body[:120]!r}; trying pyatv")
-        except urllib.error.HTTPError as e:
-            if e.code == 404 and "://" not in target:
-                logger.error(f"Deeplink app has no saved deep link named {target!r}; nothing to fall back to")
-                return False
-            logger.warning(f"Deeplink server answered {e.code} for {target}; trying pyatv")
-        except (urllib.error.URLError, OSError, ValueError) as e:
-            logger.warning(f"Deeplink server at {DEEPLINK_SERVER} not answering ({e}); "
-                           "on the Apple TV force-quit and reopen the Deeplink app. Trying pyatv")
+        for attempt in (1, 2):
+            try:
+                status, body = _deeplink_get(url, DEEPLINK_TIMEOUT)
+                if 200 <= status < 300:
+                    logger.info(f"Deeplink app opened {target}")
+                    if ok_delay > 0:
+                        asyncio.run(press_after_async(ok_delay, ok_key, atv_name=atv_name))
+                    return True
+                logger.warning(f"Deeplink server answered {status} for {target}: {body[:120]!r}; trying pyatv")
+                break
+            except urllib.error.HTTPError as e:
+                if e.code == 404 and "://" not in target:
+                    logger.error(f"Deeplink app has no saved deep link named {target!r}; nothing to fall back to")
+                    return False
+                logger.warning(f"Deeplink server answered {e.code} for {target}; trying pyatv")
+                break
+            except (urllib.error.URLError, OSError, ValueError) as e:
+                if attempt == 1 and DEEPLINK_APP_ID:
+                    logger.info(f"Deeplink server not answering ({e}); bringing the app to the front")
+                    if asyncio.run(_foreground_deeplink_app(atv_name)):
+                        continue
+                logger.warning(f"Deeplink server at {DEEPLINK_SERVER} not answering ({e}); "
+                               "on the Apple TV force-quit and reopen the Deeplink app. Trying pyatv")
+                break
     else:
         logger.info("deeplink_server not configured; opening via pyatv")
     return asyncio.run(launch_sequence_async(target, cec_wake=cec_wake, ok_delay=ok_delay, atv_name=atv_name,
                                              ok_key=ok_key))
+
+
+async def _foreground_deeplink_app(atv_name=None):
+    """Launch the DeepLink app by bundle id so its web server comes back,
+    then wait for it to start listening. True when the launch went through."""
+    atv = await connect(name=atv_name)
+    if not atv:
+        return False
+    try:
+        await atv.apps.launch_app(DEEPLINK_APP_ID)
+        await asyncio.sleep(DEEPLINK_FOREGROUND_WAIT)
+        return True
+    except Exception as e:
+        logger.warning(f"Could not open the DeepLink app ({DEEPLINK_APP_ID}): {e}")
+        return False
 
 
 async def press_after_async(delay, key="select", atv_name=None):
@@ -552,6 +581,17 @@ async def press_after_async(delay, key="select", atv_name=None):
     if not atv:
         return False
     return await _press_keys(atv, parse_ok_keys(key), float(delay))
+
+
+def pause(atv_name=None):
+    """Lift-to-pause: one Play/Pause press on the Apple TV (a toggle - if the
+    video was already paused by hand this resumes it; Apple exposes no
+    pause-only command over Companion)."""
+    try:
+        return asyncio.run(press_after_async(0, "play_pause", atv_name=atv_name))
+    except Exception as e:
+        logger.error(f"Apple TV pause failed: {e}")
+        return False
 
 
 def list_apple_tvs():
@@ -582,7 +622,7 @@ def reset_config():
 
 def load_config(tags):
     """Load Apple TV configuration from tags dict."""
-    global APPLE_TV_NAME, APPLE_TV_IP, APPLE_TV_ID, DEEPLINK_SERVER
+    global APPLE_TV_NAME, APPLE_TV_IP, APPLE_TV_ID, DEEPLINK_SERVER, DEEPLINK_APP_ID
     global COMPANION_CREDENTIALS, AIRPLAY_CREDENTIALS
     global _config_loaded
 
@@ -611,6 +651,8 @@ def load_config(tags):
         DEEPLINK_SERVER = str(tags['deeplink_server'] or '').strip().rstrip('/') or None
         if DEEPLINK_SERVER and '://' not in DEEPLINK_SERVER:
             DEEPLINK_SERVER = 'http://' + DEEPLINK_SERVER
+    if 'deeplink_app_id' in tags:
+        DEEPLINK_APP_ID = str(tags['deeplink_app_id'] or '').strip() or None
         logger.info(f"Deeplink app server from config: {DEEPLINK_SERVER}")
         logger.info("Loaded AirPlay credentials from config")
 

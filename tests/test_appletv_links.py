@@ -172,6 +172,21 @@ class ConnectionCacheTests(unittest.TestCase):
         self.assertIn("close", fake.calls)
         appletv._atv = appletv._atv_loop = None
 
+    def test_pause_presses_play_pause_once(self):
+        fake = FakeAtv()
+
+        async def fake_connect(name=None, ip=None):
+            return fake
+        with mock.patch.object(appletv, "connect", fake_connect), mock.patch.object(appletv.asyncio, "sleep", mock.AsyncMock()):
+            self.assertTrue(appletv.pause())
+        self.assertEqual(fake.calls, ["play_pause"])
+
+    def test_pause_without_apple_tv_is_false(self):
+        async def none_connect(name=None, ip=None):
+            return None
+        with mock.patch.object(appletv, "connect", none_connect):
+            self.assertFalse(appletv.pause())
+
     def test_launch_url_rejects_empty(self):
         self.assertFalse(appletv.launch_url("   "))
 
@@ -214,18 +229,45 @@ class DeeplinkAppTests(unittest.TestCase):
             self.assertTrue(appletv.launch_deeplink("https://tv.apple.com/us/movie/x", ok_delay=3, ok_key="play_pause"))
         self.assertEqual(fake.calls, ["play_pause"])
 
-    def test_server_down_falls_back_to_pyatv_with_the_same_target(self):
+    def test_server_down_foregrounds_the_app_then_succeeds(self):
+        import urllib.error
+        fake = FakeAtv()
+        tries = []
+
+        def flaky(url, timeout):
+            tries.append(url)
+            if len(tries) == 1:
+                raise urllib.error.URLError("connection refused")
+            return 200, b"ok"
+
+        async def fake_connect(name=None, ip=None):
+            return fake
+        with mock.patch.object(appletv, "_deeplink_get", flaky), mock.patch.object(appletv, "connect", fake_connect), \
+             mock.patch.object(appletv.asyncio, "sleep", mock.AsyncMock()), \
+             mock.patch.object(appletv, "launch_sequence_async", side_effect=AssertionError("pyatv fallback used")):
+            self.assertTrue(appletv.launch_deeplink("plutotv://live-tv/star-trek-1"))
+        self.assertEqual(len(tries), 2)
+        self.assertEqual(fake.calls, [("launch", "com.celerity.DeepLink")])
+
+    def test_server_down_even_after_foregrounding_falls_back_to_pyatv(self):
         import urllib.error
 
         def down(url, timeout):
             raise urllib.error.URLError("connection refused")
+        fake = FakeAtv()
         launched = []
+
+        async def fake_connect(name=None, ip=None):
+            return fake
 
         async def fake_seq(url, cec_wake=False, ok_delay=0, atv_name=None, atv_ip=None, ok_key="select"):
             launched.append((url, cec_wake))
             return True
-        with mock.patch.object(appletv, "_deeplink_get", down), mock.patch.object(appletv, "launch_sequence_async", fake_seq):
+        with mock.patch.object(appletv, "_deeplink_get", down), mock.patch.object(appletv, "connect", fake_connect), \
+             mock.patch.object(appletv.asyncio, "sleep", mock.AsyncMock()), \
+             mock.patch.object(appletv, "launch_sequence_async", fake_seq):
             self.assertTrue(appletv.launch_deeplink("plutotv://live-tv/star-trek-1", cec_wake=True))
+        self.assertEqual(fake.calls, [("launch", "com.celerity.DeepLink")])
         self.assertEqual(launched, [("plutotv://live-tv/star-trek-1", True)])
 
     def test_server_error_status_falls_back(self):
