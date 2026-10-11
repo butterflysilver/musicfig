@@ -404,11 +404,27 @@ class Base():
         if not getattr(self, 'appletv_video', False):
             return
         self.appletv_video = False
+        self.appletv_paused_url = getattr(self, 'appletv_url_playing', None)
 
         def worker():
             if appletv.pause():
                 logger.info('Apple TV paused (figure lifted)')
         threading.Thread(target=worker, name='appletv-pause', daemon=True).start()
+
+    def resumeAppleTvIfSame(self, url, pad):
+        """The same figure put back after a lift-to-pause: one Play/Pause
+        resumes the video that is still up. No relaunch, no sleep/wake, no
+        account-chooser keys - those are for a cold start and would pause a
+        title that tvOS resumed by itself on relaunch. True when handled."""
+        if url and url == getattr(self, 'appletv_paused_url', None):
+            self.appletv_paused_url = None
+            logger.info('Apple TV: same figure replaced, resuming')
+            if appletv.pause():  # toggle
+                self.appletv_video = True
+                self.appletv_url_playing = url
+                self.base.switch_pad(pad, self.PURPLE)
+                return True
+        return False
 
     def switchHdmiToAppleTv(self, tags):
         """
@@ -622,10 +638,13 @@ class Base():
                             # youtube_ok_delay: seconds after the launch to press
                             # Select on the Apple TV (YouTube's account chooser).
                             ok_delay = tags.get('youtube_ok_delay', 0) or 0
-                            if appletv.launch_youtube(youtube_url,
-                                                      cec_wake=bool(tags.get('appletv_cec_wake', False)),
-                                                      ok_delay=ok_delay):
+                            if self.resumeAppleTvIfSame(youtube_url, pad):
+                                ok_delay = 1  # nothing more to press
+                            elif appletv.launch_youtube(youtube_url,
+                                                        cec_wake=bool(tags.get('appletv_cec_wake', False)),
+                                                        ok_delay=ok_delay):
                                 self.appletv_video = True
+                                self.appletv_url_playing = youtube_url
                                 self.base.switch_pad(pad, self.PURPLE)
                                 if not ok_delay:
                                     # Wait for YouTube to load, then press OK to play
@@ -644,12 +663,14 @@ class Base():
                             appletv.load_config(tags)
                             self.switchHdmiToAppleTv(tags)
                             atv_url = tags['identifier'][identifier]['appletv_url']
-                            logger.info('Launching Apple TV URL: %s' % atv_url)
-                            if appletv.launch_url(atv_url,
-                                                  cec_wake=bool(tags.get('appletv_cec_wake', False)),
-                                                  ok_delay=tags.get('appletv_url_ok_delay', 0) or 0,
-                                                  ok_key=tags.get('appletv_url_ok_key', 'select') or 'select'):
+                            if self.resumeAppleTvIfSame(atv_url, pad):
+                                pass
+                            elif appletv.launch_url(atv_url,
+                                                    cec_wake=bool(tags.get('appletv_cec_wake', False)),
+                                                    ok_delay=tags.get('appletv_url_ok_delay', 0) or 0,
+                                                    ok_key=tags.get('appletv_url_ok_key', 'select') or 'select'):
                                 self.appletv_video = True
+                                self.appletv_url_playing = atv_url
                                 self.base.switch_pad(pad, self.PURPLE)
                             else:
                                 self.base.flash_pad(pad=pad, on_length=10, off_length=10,
@@ -660,12 +681,14 @@ class Base():
                             appletv.load_config(tags)
                             self.switchHdmiToAppleTv(tags)
                             dl_target = tags['identifier'][identifier]['deeplink']
-                            logger.info('Deeplink: %s' % dl_target)
-                            if appletv.launch_deeplink(dl_target,
-                                                       cec_wake=bool(tags.get('appletv_cec_wake', False)),
-                                                       ok_delay=tags.get('appletv_url_ok_delay', 0) or 0,
-                                                       ok_key=tags.get('appletv_url_ok_key', 'select') or 'select'):
+                            if self.resumeAppleTvIfSame(dl_target, pad):
+                                pass
+                            elif appletv.launch_deeplink(dl_target,
+                                                         cec_wake=bool(tags.get('appletv_cec_wake', False)),
+                                                         ok_delay=tags.get('appletv_url_ok_delay', 0) or 0,
+                                                         ok_key=tags.get('appletv_url_ok_key', 'select') or 'select'):
                                 self.appletv_video = True
+                                self.appletv_url_playing = dl_target
                                 self.base.switch_pad(pad, self.PURPLE)
                             else:
                                 self.base.flash_pad(pad=pad, on_length=10, off_length=10,

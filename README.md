@@ -127,7 +127,9 @@ Notes:
   `appletv_url_ok_key: select, play_pause` with `appletv_url_ok_delay: 3` picks the highlighted account and
   starts playback (the Deeplink developer's own Shortcut does open, wait, Play/Pause). Lifting the figure
   that started a video presses Play/Pause again (lift-to-pause; it is a toggle, so a video paused by hand
-  resumes on lift - Apple has no pause-only command). The Pi reconnects to the Apple TV around the sleep/wake and retries a failed launch
+  resumes on lift - Apple has no pause-only command). Putting the SAME figure back after a lift just resumes
+  (one Play/Pause): no relaunch, no sleep/wake, no chooser keys - tvOS resumes a title by itself on relaunch
+  and the cold-start keys would pause it again. A different figure, or the first tap, does the full launch. The Pi reconnects to the Apple TV around the sleep/wake and retries a failed launch
   once on a fresh session (tvOS answers "Open URL failed" on a session that slept); set `appletv_ip` to make
   those reconnects near-instant.
 * `deeplink: <url or scheme>` goes through the **Deeplink** tvOS app (celerityapps, TestFlight) instead: with
