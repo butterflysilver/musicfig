@@ -7,6 +7,8 @@ Enables launching Disney+, Netflix, and other streaming content via deep links.
 import asyncio
 import re
 import logging
+import http.client
+import ipaddress
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -42,6 +44,7 @@ AIRPLAY_CREDENTIALS = None
 # Base URL of that server (http://<apple-tv-ip>[:port]); None = not used.
 DEEPLINK_SERVER = None
 DEEPLINK_TIMEOUT = 4  # seconds; the server is on the LAN, anything slower is "not running"
+socket_timeout = __import__("socket").timeout
 # tvOS suspends the app (and its server) as soon as another app is in front,
 # so a refused connection is normal: bring the app to the front over pyatv
 # (the author's own Shortcut starts with "Open App on Apple TV: DeepLink"),
@@ -51,13 +54,34 @@ DEEPLINK_FOREGROUND_WAIT = 2.5
 FIRST_WAKE_WINDOW = 8  # seconds to give the first turn_on before resending it
 
 
+def _is_ip(value) -> bool:
+    """pyatv.scan(hosts=...) wants IP addresses; a `.local` name or a typo in
+    appletv_ip raised AddressValueError straight out of the pad loop."""
+    try:
+        ipaddress.ip_address(str(value or "").strip())
+        return True
+    except ValueError:
+        return False
+
+
+def _guarded(label, coro_factory):
+    """Run one tag action's coroutine; any exception is logged and becomes
+    False. The pad loop has no try/except of its own and the service is
+    Restart=always, so an escape here darkens every pad."""
+    try:
+        return asyncio.run(coro_factory())
+    except Exception as e:
+        logger.error(f"{label} failed: {e.__class__.__name__}: {e}")
+        return False
+
+
 async def scan_for_apple_tvs(timeout=5):
     """Scan network for Apple TVs and return list of found devices. With an
     IP configured the scan is unicast to that host and returns as soon as it
     answers (a reconnect around the HDMI-CEC sleep/wake then costs well under
     a second instead of the full multicast timeout)."""
     logger.info("Scanning for Apple TVs...")
-    hosts = [APPLE_TV_IP] if APPLE_TV_IP else None
+    hosts = [APPLE_TV_IP] if _is_ip(APPLE_TV_IP) else None
     atvs = await pyatv.scan(asyncio.get_event_loop(), timeout=timeout, hosts=hosts)
 
     for atv in atvs:
@@ -492,8 +516,8 @@ def launch_youtube(video_id, atv_name=None, cec_wake=False, ok_delay=0):
     """Launch a YouTube video on the Apple TV. cec_wake sleeps/wakes the Apple
     TV first so the TV switches to its input; ok_delay > 0 presses Select that
     many seconds after the launch (YouTube's account chooser)."""
-    return asyncio.run(launch_sequence_async(youtube_deep_link(video_id), cec_wake=cec_wake,
-                                             ok_delay=ok_delay, atv_name=atv_name))
+    return _guarded("YouTube launch", lambda: launch_sequence_async(
+        youtube_deep_link(video_id), cec_wake=cec_wake, ok_delay=ok_delay, atv_name=atv_name))
 
 
 def launch_url(url, atv_name=None, cec_wake=False, ok_delay=0, ok_key="select"):
@@ -504,8 +528,8 @@ def launch_url(url, atv_name=None, cec_wake=False, ok_delay=0, ok_key="select"):
     if not url:
         logger.warning("appletv_url tag is empty")
         return False
-    return asyncio.run(launch_sequence_async(url, cec_wake=cec_wake, ok_delay=ok_delay, atv_name=atv_name,
-                                             ok_key=ok_key))
+    return _guarded("Apple TV URL launch", lambda: launch_sequence_async(
+        url, cec_wake=cec_wake, ok_delay=ok_delay, atv_name=atv_name, ok_key=ok_key))
 
 
 def deeplink_open_url(target, server=None):
@@ -555,7 +579,7 @@ def launch_deeplink(target, atv_name=None, cec_wake=False, ok_delay=0, ok_key="s
                 if 200 <= status < 300:
                     logger.info(f"Deeplink app opened {target}")
                     if any(d > 0 for d in delays):
-                        asyncio.run(press_after_async(delays, ok_key, atv_name=atv_name))
+                        _guarded("Deeplink key press", lambda: press_after_async(delays, ok_key, atv_name=atv_name))
                     return True
                 logger.warning(f"Deeplink server answered {status} for {target}: {body[:120]!r}; trying pyatv")
                 break
@@ -565,18 +589,27 @@ def launch_deeplink(target, atv_name=None, cec_wake=False, ok_delay=0, ok_key="s
                     return False
                 logger.warning(f"Deeplink server answered {e.code} for {target}; trying pyatv")
                 break
-            except (urllib.error.URLError, OSError, ValueError) as e:
-                if attempt == 1 and DEEPLINK_APP_ID:
-                    logger.info(f"Deeplink server not answering ({e}); bringing the app to the front")
-                    if asyncio.run(_foreground_deeplink_app(atv_name)):
+            except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
+                reason = getattr(e, "reason", e)
+                if isinstance(reason, (TimeoutError, socket_timeout)) or isinstance(e, (TimeoutError, socket_timeout)):
+                    # The server answered the TCP connect but never replied: it most
+                    # likely opened the target and got suspended behind it. Opening it
+                    # again (or sleeping/waking the box) would fight the app that is now
+                    # playing, so treat this as done.
+                    logger.warning(f"Deeplink server took longer than {DEEPLINK_TIMEOUT}s to answer for {target}; "
+                                   "assuming it opened the target")
+                    return True
+                if attempt == 1 and DEEPLINK_APP_ID and isinstance(reason, ConnectionRefusedError):
+                    logger.info("Deeplink server refused the connection (app suspended); bringing it to the front")
+                    if _guarded("DeepLink app foreground", lambda: _foreground_deeplink_app(atv_name)):
                         continue
                 logger.warning(f"Deeplink server at {DEEPLINK_SERVER} not answering ({e}); "
                                "on the Apple TV force-quit and reopen the Deeplink app. Trying pyatv")
                 break
     else:
         logger.info("deeplink_server not configured; opening via pyatv")
-    return asyncio.run(launch_sequence_async(target, cec_wake=cec_wake, ok_delay=ok_delay, atv_name=atv_name,
-                                             ok_key=ok_key))
+    return _guarded("Deeplink pyatv fallback", lambda: launch_sequence_async(
+        target, cec_wake=cec_wake, ok_delay=ok_delay, atv_name=atv_name, ok_key=ok_key))
 
 
 async def _foreground_deeplink_app(atv_name=None):
@@ -654,7 +687,11 @@ def load_config(tags):
         logger.info(f"Apple TV name from config: {APPLE_TV_NAME}")
 
     if 'appletv_ip' in tags:
-        APPLE_TV_IP = tags['appletv_ip']
+        APPLE_TV_IP = str(tags['appletv_ip'] or '').strip() or None
+        if APPLE_TV_IP and not _is_ip(APPLE_TV_IP):
+            logger.warning(f"appletv_ip {APPLE_TV_IP!r} is not an IP address; using multicast scans "
+                           "(use the Apple TV's IP, not its .local name)")
+            APPLE_TV_IP = None
         logger.info(f"Apple TV IP from config: {APPLE_TV_IP}")
 
     if 'appletv_id' in tags:
@@ -667,14 +704,15 @@ def load_config(tags):
 
     if 'appletv_airplay_credentials' in tags:
         AIRPLAY_CREDENTIALS = tags['appletv_airplay_credentials']
+        logger.info("Loaded AirPlay credentials from config")
     if 'deeplink_server' in tags:
         DEEPLINK_SERVER = str(tags['deeplink_server'] or '').strip().rstrip('/') or None
         if DEEPLINK_SERVER and '://' not in DEEPLINK_SERVER:
             DEEPLINK_SERVER = 'http://' + DEEPLINK_SERVER
+        logger.info(f"Deeplink app server from config: {DEEPLINK_SERVER}")
     if 'deeplink_app_id' in tags:
         DEEPLINK_APP_ID = str(tags['deeplink_app_id'] or '').strip() or None
-        logger.info(f"Deeplink app server from config: {DEEPLINK_SERVER}")
-        logger.info("Loaded AirPlay credentials from config")
+        logger.info(f"Deeplink app id from config: {DEEPLINK_APP_ID}")
 
     _config_loaded = True
 

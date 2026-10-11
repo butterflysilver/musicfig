@@ -208,6 +208,22 @@ class ConnectionCacheTests(unittest.TestCase):
         with mock.patch.object(appletv, "connect", none_connect):
             self.assertFalse(appletv.pause())
 
+    def test_bad_appletv_ip_does_not_raise_and_is_ignored(self):
+        appletv.reset_config()
+        appletv.load_config({"appletv_ip": "Game-Room.local"})
+        self.assertIsNone(appletv.APPLE_TV_IP)
+        appletv.reset_config()
+        appletv.load_config({"appletv_ip": "192.168.1.210"})
+        self.assertEqual(appletv.APPLE_TV_IP, "192.168.1.210")
+        appletv.reset_config()
+        appletv.APPLE_TV_IP = None
+
+    def test_launch_url_swallows_scan_errors(self):
+        async def boom(name=None, ip=None):
+            raise OSError("network is unreachable")
+        with mock.patch.object(appletv, "connect", boom):
+            self.assertFalse(appletv.launch_url("https://tv.apple.com/us/movie/x"))
+
     def test_launch_url_rejects_empty(self):
         self.assertFalse(appletv.launch_url("   "))
 
@@ -258,7 +274,7 @@ class DeeplinkAppTests(unittest.TestCase):
         def flaky(url, timeout):
             tries.append(url)
             if len(tries) == 1:
-                raise urllib.error.URLError("connection refused")
+                raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
             return 200, b"ok"
 
         async def fake_connect(name=None, ip=None):
@@ -274,7 +290,7 @@ class DeeplinkAppTests(unittest.TestCase):
         import urllib.error
 
         def down(url, timeout):
-            raise urllib.error.URLError("connection refused")
+            raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
         fake = FakeAtv()
         launched = []
 
@@ -319,6 +335,27 @@ class DeeplinkAppTests(unittest.TestCase):
         with mock.patch.object(appletv, "_deeplink_get", side_effect=AssertionError("no server call expected")), \
              mock.patch.object(appletv, "launch_sequence_async", fake_seq):
             self.assertTrue(appletv.launch_deeplink("youtube://www.youtube.com/watch?v=abc"))
+
+    def test_http_exception_from_the_server_falls_back(self):
+        import http.client
+
+        def bad(url, timeout):
+            raise http.client.BadStatusLine("garbage")
+
+        async def fake_seq(url, **kw):
+            return True
+        with mock.patch.object(appletv, "_deeplink_get", bad), mock.patch.object(appletv, "launch_sequence_async", fake_seq):
+            self.assertTrue(appletv.launch_deeplink("https://example.com/x.m3u8"))
+
+    def test_timeout_counts_as_opened_not_as_down(self):
+        import socket
+
+        def slow(url, timeout):
+            raise socket.timeout("timed out")
+        with mock.patch.object(appletv, "_deeplink_get", slow), \
+             mock.patch.object(appletv, "launch_sequence_async", side_effect=AssertionError("pyatv used")), \
+             mock.patch.object(appletv, "_foreground_deeplink_app", side_effect=AssertionError("foregrounded")):
+            self.assertTrue(appletv.launch_deeplink("https://tv.apple.com/us/movie/x"))
 
     def test_saved_name_uses_the_name_form(self):
         self.assertEqual(appletv.deeplink_open_url("Toy Story"), "http://192.168.1.50/open?name=Toy%20Story")
