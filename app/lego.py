@@ -411,6 +411,25 @@ class Base():
                 logger.info('Apple TV paused (figure lifted)')
         threading.Thread(target=worker, name='appletv-pause', daemon=True).start()
 
+    def appleTvLaunchArgs(self, tags):
+        """cec_wake / ok_delay / ok_key for a TV launch. Cold (no TV launch in
+        the last `appletv_warm_minutes`, default 10): sleep/wake for HDMI-CEC,
+        then the configured keys (Select for the account chooser, Play).
+        Warm (a figure was swapped for another): the TV is on and the app is
+        up, so no sleep/wake and no chooser - just Play after
+        `appletv_url_warm_delay` seconds (default 4)."""
+        last = getattr(self, 'appletv_last_launch', 0)
+        try:
+            warm_for = float(tags.get('appletv_warm_minutes', 10) or 0) * 60
+        except (TypeError, ValueError):
+            warm_for = 600
+        if last and time.time() - last < warm_for:
+            logger.info('Apple TV warm: no sleep/wake, Play only')
+            return dict(cec_wake=False, ok_delay=tags.get('appletv_url_warm_delay', 4) or 4, ok_key='play_pause')
+        return dict(cec_wake=bool(tags.get('appletv_cec_wake', False)),
+                    ok_delay=tags.get('appletv_url_ok_delay', 0) or 0,
+                    ok_key=tags.get('appletv_url_ok_key', 'select') or 'select')
+
     def resumeAppleTvIfSame(self, url, pad):
         """The same figure put back after a lift-to-pause: one Play/Pause
         resumes the video that is still up. No relaunch, no sleep/wake, no
@@ -422,6 +441,7 @@ class Base():
             if appletv.pause():  # toggle
                 self.appletv_video = True
                 self.appletv_url_playing = url
+                self.appletv_last_launch = time.time()
                 self.base.switch_pad(pad, self.PURPLE)
                 return True
         return False
@@ -645,6 +665,7 @@ class Base():
                                                         ok_delay=ok_delay):
                                 self.appletv_video = True
                                 self.appletv_url_playing = youtube_url
+                                self.appletv_last_launch = time.time()
                                 self.base.switch_pad(pad, self.PURPLE)
                                 if not ok_delay:
                                     # Wait for YouTube to load, then press OK to play
@@ -665,12 +686,10 @@ class Base():
                             atv_url = tags['identifier'][identifier]['appletv_url']
                             if self.resumeAppleTvIfSame(atv_url, pad):
                                 pass
-                            elif appletv.launch_url(atv_url,
-                                                    cec_wake=bool(tags.get('appletv_cec_wake', False)),
-                                                    ok_delay=tags.get('appletv_url_ok_delay', 0) or 0,
-                                                    ok_key=tags.get('appletv_url_ok_key', 'select') or 'select'):
+                            elif appletv.launch_url(atv_url, **self.appleTvLaunchArgs(tags)):
                                 self.appletv_video = True
                                 self.appletv_url_playing = atv_url
+                                self.appletv_last_launch = time.time()
                                 self.base.switch_pad(pad, self.PURPLE)
                             else:
                                 self.base.flash_pad(pad=pad, on_length=10, off_length=10,
@@ -683,12 +702,10 @@ class Base():
                             dl_target = tags['identifier'][identifier]['deeplink']
                             if self.resumeAppleTvIfSame(dl_target, pad):
                                 pass
-                            elif appletv.launch_deeplink(dl_target,
-                                                         cec_wake=bool(tags.get('appletv_cec_wake', False)),
-                                                         ok_delay=tags.get('appletv_url_ok_delay', 0) or 0,
-                                                         ok_key=tags.get('appletv_url_ok_key', 'select') or 'select'):
+                            elif appletv.launch_deeplink(dl_target, **self.appleTvLaunchArgs(tags)):
                                 self.appletv_video = True
                                 self.appletv_url_playing = dl_target
+                                self.appletv_last_launch = time.time()
                                 self.base.switch_pad(pad, self.PURPLE)
                             else:
                                 self.base.flash_pad(pad=pad, on_length=10, off_length=10,

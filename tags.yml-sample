@@ -16,6 +16,8 @@ lights: on
 # appletv_url_ok_delay: 12, 5  # first key N s after the launch, later keys M s apart (one number = same gap; 0 = never)
 # appletv_url_ok_key: select, play_pause   # keys pressed ok_delay apart: Select picks the "Who's watching?"
 #                                          # account, Play/Pause starts the title (Apple TV app)
+# appletv_warm_minutes: 10     # a TV launch within this window makes the next figure "warm": no sleep/wake,
+# appletv_url_warm_delay: 4    # no chooser keys, just Play this many seconds after the title opens
 # deeplink_server: http://192.168.1.50   # the Deeplink tvOS app's web server, for deeplink: tags
 # deeplink_app_id: com.celerity.DeepLink  # opened over pyatv when that server is not answering
 
