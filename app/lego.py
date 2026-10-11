@@ -396,6 +396,20 @@ class Base():
             self.yoto_stop_thread = threading.Thread(target=worker, name='yoto-stop', daemon=True)
             self.yoto_stop_thread.start()
 
+    def pauseAppleTv(self):
+        """Lift-to-pause for the TV actions (youtube / appletv_url / deeplink):
+        if this pad's current figure started video on the Apple TV, press
+        Play/Pause. Runs on its own thread so a slow Companion session never
+        stalls the pad loop (same shape as stopYoto)."""
+        if not getattr(self, 'appletv_video', False):
+            return
+        self.appletv_video = False
+
+        def worker():
+            if appletv.pause():
+                logger.info('Apple TV paused (figure lifted)')
+        threading.Thread(target=worker, name='appletv-pause', daemon=True).start()
+
     def switchHdmiToAppleTv(self, tags):
         """
         Switch HDMI input to Apple TV using available methods.
@@ -468,6 +482,7 @@ class Base():
                         self.pauseMp3()
                         homepod.stop()
                         self.stopYoto()
+                        self.pauseAppleTv()
                         if spotify.activated():
                             spotify.pause()
                     # The lifted figure's pad goes back to idle, whatever
@@ -610,6 +625,7 @@ class Base():
                             if appletv.launch_youtube(youtube_url,
                                                       cec_wake=bool(tags.get('appletv_cec_wake', False)),
                                                       ok_delay=ok_delay):
+                                self.appletv_video = True
                                 self.base.switch_pad(pad, self.PURPLE)
                                 if not ok_delay:
                                     # Wait for YouTube to load, then press OK to play
@@ -633,6 +649,7 @@ class Base():
                                                   cec_wake=bool(tags.get('appletv_cec_wake', False)),
                                                   ok_delay=tags.get('appletv_url_ok_delay', 0) or 0,
                                                   ok_key=tags.get('appletv_url_ok_key', 'select') or 'select'):
+                                self.appletv_video = True
                                 self.base.switch_pad(pad, self.PURPLE)
                             else:
                                 self.base.flash_pad(pad=pad, on_length=10, off_length=10,
@@ -648,6 +665,7 @@ class Base():
                                                        cec_wake=bool(tags.get('appletv_cec_wake', False)),
                                                        ok_delay=tags.get('appletv_url_ok_delay', 0) or 0,
                                                        ok_key=tags.get('appletv_url_ok_key', 'select') or 'select'):
+                                self.appletv_video = True
                                 self.base.switch_pad(pad, self.PURPLE)
                             else:
                                 self.base.flash_pad(pad=pad, on_length=10, off_length=10,

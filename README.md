@@ -123,15 +123,19 @@ Notes:
   `appletv_url_ok_delay` / `appletv_url_ok_key`: one key or a sequence pressed `ok_delay` apart. The Apple TV
   app on a multi-account box shows "Who's watching?" first and then waits on the title page, so
   `appletv_url_ok_key: select, play_pause` with `appletv_url_ok_delay: 3` picks the highlighted account and
-  starts playback (the Deeplink developer's own Shortcut does open, wait, Play/Pause). The Pi reconnects to the Apple TV around the sleep/wake and retries a failed launch
+  starts playback (the Deeplink developer's own Shortcut does open, wait, Play/Pause). Lifting the figure
+  that started a video presses Play/Pause again (lift-to-pause; it is a toggle, so a video paused by hand
+  resumes on lift - Apple has no pause-only command). The Pi reconnects to the Apple TV around the sleep/wake and retries a failed launch
   once on a fresh session (tvOS answers "Open URL failed" on a session that slept); set `appletv_ip` to make
   those reconnects near-instant.
 * `deeplink: <url or scheme>` goes through the **Deeplink** tvOS app (celerityapps, TestFlight) instead: with
   `deeplink_server: http://<apple-tv-ip>` at the top level the Pi calls its web server (`GET /open?target=...`),
   which opens things pyatv's Companion launch cannot (Pluto `plutotv://live-tv/<slug>`, `vlc-x-callback://`,
-  raw `.m3u8` streams in the app's own player, Apple TV app movie pages). When that server does not answer
-  (it does not always come back after the Apple TV reboots - force-quit and reopen the app on the TV) the same
-  target is handed to pyatv and the fallback is logged. YouTube links still want the `youtube://` form. A value
+  raw `.m3u8` streams in the app's own player, Apple TV app movie pages). tvOS suspends the app - and its
+  server - whenever another app is in front, so a refused connection is normal: the Pi opens the DeepLink app
+  over pyatv (`deeplink_app_id`, default `com.celerity.DeepLink`), waits ~2.5 s and asks again; only if it
+  still does not answer is the same target handed to pyatv and the fallback logged (after an Apple TV reboot
+  the server may need a force-quit/reopen of the app on the TV). YouTube links still want the `youtube://` form. A value
   without a scheme (`deeplink: Toy Story`) is the display name of a deep link saved in the app (`/open?name=`),
   so a link validated on the phone first can be reused by name. API: https://celerityapps.com/deeplinks/docs.
   `deeplink_server` can be the Apple TV's `.local` name (`http://Living-Room.local`) or its IP. Purchased Apple
