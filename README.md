@@ -120,9 +120,10 @@ Notes:
   `youtube_ok_delay: 4` presses Select on the Apple TV that many seconds after the launch (YouTube's account
   chooser picks its first account). `appletv_url: <anything tvOS will open>` is the generic form (Apple TV app
   movies, other apps' URL schemes, Deeplink-app bookmarks) with the same `appletv_cec_wake` and its own
-  `appletv_url_ok_delay` / `appletv_url_ok_key` (`select`, or `play_pause` for the Apple TV app, which opens
-  the title page and waits for Play - the Deeplink developer's own Shortcut does exactly that: open, wait
-  1-3 s, Play/Pause). The Pi reconnects to the Apple TV around the sleep/wake and retries a failed launch
+  `appletv_url_ok_delay` / `appletv_url_ok_key`: one key or a sequence pressed `ok_delay` apart. The Apple TV
+  app on a multi-account box shows "Who's watching?" first and then waits on the title page, so
+  `appletv_url_ok_key: select, play_pause` with `appletv_url_ok_delay: 3` picks the highlighted account and
+  starts playback (the Deeplink developer's own Shortcut does open, wait, Play/Pause). The Pi reconnects to the Apple TV around the sleep/wake and retries a failed launch
   once on a fresh session (tvOS answers "Open URL failed" on a session that slept); set `appletv_ip` to make
   those reconnects near-instant.
 * `deeplink: <url or scheme>` goes through the **Deeplink** tvOS app (celerityapps, TestFlight) instead: with
