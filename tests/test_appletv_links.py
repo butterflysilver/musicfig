@@ -193,6 +193,50 @@ class ConnectionCacheTests(unittest.TestCase):
         self.assertIn("close", fake.calls)
         appletv._atv = appletv._atv_loop = None
 
+    def test_close_tasks_from_a_dead_transport_are_awaited_and_swallowed(self):
+        """pyatv's close() hands back the disconnect tasks it scheduled; on a
+        connection from a finished loop they raise "Event loop is closed".
+        Un-awaited they were reported as ERROR at every asyncio.run() shutdown
+        (one per lift-to-pause on the living-room Pi)."""
+        seen = []
+
+        class ClosingAtv(FakeAtv):
+            def close(self):
+                self.calls.append("close")
+
+                async def dead_disconnect():
+                    seen.append("ran")
+                    raise RuntimeError("Event loop is closed")
+                return {asyncio.create_task(dead_disconnect())}
+
+        fake = ClosingAtv()
+        appletv._atv, appletv._atv_name = fake, "Living room"
+        appletv._atv_loop = object()
+
+        async def no_scan(timeout=5):
+            return []
+
+        async def run():
+            with mock.patch.object(appletv, "scan_for_apple_tvs", no_scan):
+                return await appletv.connect()
+        with self.assertLogs(appletv.logger, level="INFO") as cm:
+            self.assertIsNone(asyncio.run(run()))
+        self.assertEqual(seen, ["ran"])  # the task was awaited inside the action, not left to shutdown
+        self.assertNotIn("Event loop is closed", "\n".join(cm.output))
+        self.assertEqual([m for m in cm.output if m.startswith("ERROR")], ["ERROR:app.appletv:No Apple TVs found on network"])
+        appletv._atv = appletv._atv_loop = None
+
+    def test_disconnect_tolerates_close_without_tasks(self):
+        fake = FakeAtv()  # close() returns None, like the other fakes
+        appletv._atv, appletv._atv_name = fake, "Game Room"
+
+        async def run():
+            appletv._atv_loop = asyncio.get_running_loop()
+            await appletv.disconnect()
+        asyncio.run(run())
+        self.assertIsNone(appletv._atv)
+        self.assertEqual(fake.calls, ["close"])
+
     def test_pause_presses_play_pause_once(self):
         fake = FakeAtv()
 

@@ -90,6 +90,25 @@ async def scan_for_apple_tvs(timeout=5):
     return atvs
 
 
+async def _close_quietly(atv, timeout=3):
+    """pyatv's close() returns the disconnect tasks it just scheduled; left
+    un-awaited they surface at asyncio.run() shutdown as "unhandled exception
+    ... Event loop is closed" ERROR lines (one per lift-to-pause) when the
+    connection came from an earlier action's loop. Await them here and
+    swallow whatever a dead transport raises."""
+    try:
+        tasks = atv.close()
+    except Exception as e:
+        logger.debug(f"Apple TV close raised {e}")
+        return
+    if not tasks:
+        return
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout)
+    except Exception as e:
+        logger.debug(f"Apple TV close tasks raised {e}")
+
+
 async def connect(name=None, ip=None):
     """Connect to an Apple TV by name or IP address."""
     global _atv, _atv_name, _atv_loop
@@ -98,10 +117,7 @@ async def connect(name=None, ip=None):
     if _atv is not None:
         if _atv_loop is not asyncio.get_running_loop():
             logger.info("Cached Apple TV connection belongs to a finished event loop, reconnecting...")
-            try:
-                _atv.close()
-            except Exception:
-                pass
+            await _close_quietly(_atv)
             _atv = None
         else:
             try:
@@ -180,10 +196,7 @@ async def disconnect():
     """Disconnect from Apple TV."""
     global _atv, _atv_name, _atv_loop
     if _atv:
-        try:
-            _atv.close()
-        except Exception as e:
-            logger.debug(f"Apple TV close raised {e}")
+        await _close_quietly(_atv)
         logger.info(f"Disconnected from {_atv_name}")
         _atv = None
         _atv_name = None
