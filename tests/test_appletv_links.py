@@ -82,12 +82,21 @@ class LaunchSequenceTests(unittest.TestCase):
         self.assertEqual(fake.calls[launch_at - 1], "close")  # launched on a reconnected session
         self.assertEqual(fake.calls[-1], "select")
 
-    def test_cec_wake_timeout_still_launches_on_a_fresh_session(self):
+    def test_cec_wake_timeout_retries_turn_on_then_launches_on_a_fresh_session(self):
         fake = FakeAtv()
         fake.never_wakes = True
         self.assertTrue(self.run_seq(fake, cec_wake=True))
-        self.assertEqual(fake.calls.count("poll"), 25)
+        self.assertEqual(fake.calls.count("on"), 2)  # second turn_on after the timeout
+        self.assertEqual(fake.calls.count("poll"), 25 + 12)
         self.assertEqual(fake.calls[-2:], ["close", ("launch", "youtube://x")])
+
+    def test_launch_retry_wakes_the_box_first(self):
+        fake = FakeAtv()
+        fake.fail_launches = 1
+        self.assertTrue(self.run_seq(fake))
+        launches = [i for i, c in enumerate(fake.calls) if c == ("launch", "youtube://x")]
+        self.assertEqual(len(launches), 2)
+        self.assertIn("on", fake.calls[launches[0]:launches[1]])  # turn_on between the attempts
 
     def test_failed_wake_still_launches(self):
         fake = FakeAtv()
