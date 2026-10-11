@@ -222,21 +222,33 @@ async def _cec_wake(atv, timeout=25, name=None, ip=None):
     if atv is None:
         logger.error("Apple TV not reachable after sleeping it")
         return False, None
-    await atv.power.turn_on()
-    woke = False
-    for _ in range(int(timeout)):
-        await asyncio.sleep(1)
-        if str(atv.power.power_state) == "PowerState.On":
-            woke = True
-            break
+    woke = await _turn_on_and_wait(atv, timeout)
+    if not woke:
+        # One stubborn retry: a turn_on sent while the box was still dropping
+        # into sleep is lost (game room 2026-10-10 21:45). Fresh session, again.
+        logger.warning("Apple TV did not report awake within %ss; sending turn_on again", timeout)
+        again = await _reconnect(name=name, ip=ip)
+        if again is not None:
+            atv = again
+            woke = await _turn_on_and_wait(atv, max(10, int(timeout) // 2))
     if woke:
         await asyncio.sleep(2)  # let tvOS settle before a launch
         logger.info("Apple TV woken for HDMI-CEC input switch")
     else:
-        logger.error("Apple TV did not report awake within %ss", timeout)
+        logger.error("Apple TV did not report awake after two turn_on attempts")
     # Either way launch on a fresh session: the one that sent turn_on may be stale too.
     fresh = await _reconnect(name=name, ip=ip)
     return woke, fresh or atv
+
+
+async def _turn_on_and_wait(atv, timeout):
+    """turn_on, then poll power_state for up to ``timeout`` seconds."""
+    await atv.power.turn_on()
+    for _ in range(int(timeout)):
+        await asyncio.sleep(1)
+        if str(atv.power.power_state) == "PowerState.On":
+            return True
+    return False
 
 
 async def _launch_with_retry(atv, url, name=None, ip=None):
@@ -256,6 +268,11 @@ async def _launch_with_retry(atv, url, name=None, ip=None):
                 if fresh is None:
                     break
                 atv = fresh
+                try:  # "Open URL failed" is also what a sleeping box answers: make sure it is awake
+                    await atv.power.turn_on()
+                    await asyncio.sleep(3)
+                except Exception as e2:
+                    logger.debug(f"turn_on before the retry raised {e2}")
     return False, atv
 
 
