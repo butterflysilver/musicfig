@@ -112,6 +112,17 @@ class LaunchSequenceTests(unittest.TestCase):
         self.assertTrue(self.run_seq(fake, ok_delay=2, ok_key="play_pause"))
         self.assertEqual(fake.calls[-1], "play_pause")
 
+    def test_key_sequence_select_then_play_pause(self):
+        fake = FakeAtv()
+        self.assertTrue(self.run_seq(fake, ok_delay=3, ok_key="select, play_pause"))
+        self.assertEqual(fake.calls[-2:], ["select", "play_pause"])
+
+    def test_parse_ok_keys(self):
+        self.assertEqual(appletv.parse_ok_keys("select, play_pause"), ["select", "play_pause"])
+        self.assertEqual(appletv.parse_ok_keys(["play"]), ["play"])
+        self.assertEqual(appletv.parse_ok_keys(""), ["select"])
+        self.assertEqual(appletv.parse_ok_keys(None), ["select"])
+
     def test_unknown_ok_key_falls_back_to_select(self):
         fake = FakeAtv()
         self.assertTrue(self.run_seq(fake, ok_delay=2, ok_key="menu"))

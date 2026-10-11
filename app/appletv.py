@@ -262,15 +262,47 @@ async def _launch_with_retry(atv, url, name=None, ip=None):
 OK_KEYS = ("select", "play_pause", "play")
 
 
+def parse_ok_keys(ok_key):
+    """``ok_key`` may be one key or a sequence ("select, play_pause", or a
+    list): the Apple TV app shows a "Who's watching?" chooser first, so a
+    Select is needed before Play. Unknown names become select, with a warning."""
+    if isinstance(ok_key, (list, tuple)):
+        parts = [str(k) for k in ok_key]
+    else:
+        parts = str(ok_key or "select").replace(";", ",").split(",")
+    keys = []
+    for k in parts:
+        k = k.strip().lower()
+        if not k:
+            continue
+        if k not in OK_KEYS:
+            logger.warning("ok_key %r unknown (want one of %s); using select", k, ", ".join(OK_KEYS))
+            k = "select"
+        keys.append(k)
+    return keys or ["select"]
+
+
+async def _press_keys(atv, keys, delay):
+    """Wait ``delay`` seconds, press a key, repeat for each key in order."""
+    for key in keys:
+        try:
+            await asyncio.sleep(delay)
+            await getattr(atv.remote_control, key)()
+            logger.info(f"Apple TV: {key} pressed")
+        except Exception as e:
+            logger.error(f"Failed to press {key} on Apple TV: {e}")
+            return False
+    return True
+
+
 async def launch_sequence_async(url, cec_wake=False, ok_delay=0, atv_name=None, atv_ip=None, ok_key="select"):
     """One tag action: optionally sleep/wake for HDMI-CEC, launch the deep
     link (one retry on a fresh connection), optionally press a remote key
     after ok_delay seconds: "select" for an account/profile chooser,
     "play_pause" (or "play") for apps that land on the title page and wait,
-    like the Apple TV app. Returns True if the launch succeeded."""
-    if ok_key not in OK_KEYS:
-        logger.warning("ok_key %r unknown (want one of %s); using select", ok_key, ", ".join(OK_KEYS))
-        ok_key = "select"
+    like the Apple TV app; "select, play_pause" presses both, ok_delay apart.
+    Returns True if the launch succeeded."""
+    keys = parse_ok_keys(ok_key)
     try:
         ok_delay = float(ok_delay or 0)
     except (TypeError, ValueError):
@@ -297,12 +329,7 @@ async def launch_sequence_async(url, cec_wake=False, ok_delay=0, atv_name=None, 
     if not ok:
         return False
     if ok_delay > 0:
-        try:
-            await asyncio.sleep(ok_delay)
-            await getattr(atv.remote_control, ok_key)()
-            logger.info(f"Apple TV: {ok_key} pressed")
-        except Exception as e:
-            logger.error(f"Failed to press {ok_key} on Apple TV: {e}")
+        await _press_keys(atv, keys, ok_delay)
     return True
 
 
@@ -502,20 +529,12 @@ def launch_deeplink(target, atv_name=None, cec_wake=False, ok_delay=0, ok_key="s
 
 
 async def press_after_async(delay, key="select", atv_name=None):
-    """Wait ``delay`` seconds, then press one remote key over pyatv."""
-    if key not in OK_KEYS:
-        key = "select"
+    """Wait ``delay`` seconds, press a key, for each key in ``key`` (one name
+    or a sequence), over pyatv."""
     atv = await connect(name=atv_name)
     if not atv:
         return False
-    try:
-        await asyncio.sleep(float(delay))
-        await getattr(atv.remote_control, key)()
-        logger.info(f"Apple TV: {key} pressed")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to press {key} on Apple TV: {e}")
-        return False
+    return await _press_keys(atv, parse_ok_keys(key), float(delay))
 
 
 def list_apple_tvs():
