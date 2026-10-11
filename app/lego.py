@@ -431,11 +431,17 @@ class Base():
         then the configured keys (Select for the account chooser, Play).
         Warm (a figure was swapped for another): the TV is on and the app is
         up, so no sleep/wake and no chooser - just Play after
-        `appletv_url_warm_delay` seconds (default 4)."""
+        `appletv_url_warm_delay` seconds (default 4). The warm window is
+        only a hint: if someone turned the TV off with the remote meanwhile
+        the box reports asleep, and a Play on a sleeping box shows nothing -
+        so the box's real power state is checked and a cold launch is done
+        when it is not awake (or not reachable)."""
         if self.appleTvIsWarm(tags):
-            logger.info('Apple TV warm: no sleep/wake, Play only')
-            warm_delay = tags.get('appletv_url_warm_delay', 4)
-            return dict(cec_wake=False, ok_delay=4 if warm_delay is None else warm_delay, ok_key='play_pause')
+            if appletv.is_on_sync():
+                logger.info('Apple TV warm: no sleep/wake, Play only')
+                warm_delay = tags.get('appletv_url_warm_delay', 4)
+                return dict(cec_wake=False, ok_delay=4 if warm_delay is None else warm_delay, ok_key='play_pause')
+            logger.info('Apple TV within the warm window but not awake; doing a cold launch')
         return dict(cec_wake=bool(tags.get('appletv_cec_wake', False)),
                     ok_delay=tags.get('appletv_url_ok_delay', 0) or 0,
                     ok_key=tags.get('appletv_url_ok_key', 'select') or 'select')
@@ -472,6 +478,10 @@ class Base():
         # another input and a lone Play/Pause would do nothing visible.
         if time.time() - getattr(self, 'appletv_paused_at', 0) > self.appleTvWarmSeconds(tags):
             self.appletv_paused_url = None
+            return False
+        if not appletv.is_on_sync():
+            self.appletv_paused_url = None
+            logger.info('Apple TV: same figure replaced but the box is not awake; relaunching')
             return False
         self.appletv_paused_url = None
         logger.info('Apple TV: same figure replaced, resuming')

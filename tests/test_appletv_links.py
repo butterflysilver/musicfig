@@ -270,6 +270,31 @@ class ConnectionCacheTests(unittest.TestCase):
         self.assertIsNone(appletv._atv)
         self.assertEqual(fake.calls, ["close"])
 
+    def test_is_on_reads_the_power_state_property(self):
+        """power_state is a pyatv property; awaiting it raised TypeError and
+        is_on() answered False for an awake box (M2 depends on this)."""
+        class Awake(FakeAtv):
+            @property
+            def power_state(self):
+                return "PowerState.On"
+
+        class Asleep(FakeAtv):
+            @property
+            def power_state(self):
+                return "PowerState.Off"
+
+        for fake, want in ((Awake(), True), (Asleep(), False)):
+            async def fake_connect(name=None, ip=None, fake=fake):
+                return fake
+            with mock.patch.object(appletv, "connect", fake_connect):
+                self.assertIs(appletv.is_on_sync(), want)
+
+    def test_is_on_sync_is_false_when_unreachable_and_never_raises(self):
+        async def boom(name=None, ip=None):
+            raise OSError("network is unreachable")
+        with mock.patch.object(appletv, "connect", boom):
+            self.assertIs(appletv.is_on_sync(), False)
+
     def test_pause_presses_play_pause_once(self):
         fake = FakeAtv()
 
@@ -332,6 +357,44 @@ class DeeplinkAppTests(unittest.TestCase):
             self.assertTrue(appletv.launch_deeplink("https://tv.apple.com/us/movie/x"))
         self.assertEqual(seen, ["http://192.168.1.50/open?target=https://tv.apple.com/us/movie/x"])
 
+    def test_cold_start_wakes_the_box_before_asking_the_server(self):
+        """L3 from the #69 review: a Deeplink-server success never switched
+        the TV input. With cec_wake the sleep/wake now runs first, and the
+        pyatv fallback must not sleep the box a second time."""
+        fake = FakeAtv()
+        order = []
+
+        async def fake_connect(name=None, ip=None):
+            return fake
+
+        async def fake_cec(atv, timeout=25, name=None, ip=None):
+            order.append("cec")
+            return True, atv
+
+        import urllib.error
+
+        def get(url, timeout):
+            order.append("server")
+            raise urllib.error.URLError(ConnectionRefusedError("refused"))
+
+        async def fallback(url, cec_wake=False, **kw):
+            order.append(("pyatv", cec_wake))
+            return True
+        with mock.patch.object(appletv, "connect", fake_connect), \
+             mock.patch.object(appletv, "_cec_wake", fake_cec), \
+             mock.patch.object(appletv, "_deeplink_get", get), \
+             mock.patch.object(appletv, "DEEPLINK_APP_ID", None), \
+             mock.patch.object(appletv, "launch_sequence_async", fallback):
+            self.assertTrue(appletv.launch_deeplink("https://tv.apple.com/us/movie/x", cec_wake=True))
+        self.assertEqual(order, ["cec", "server", ("pyatv", False)])
+
+    def test_warm_deeplink_does_not_touch_power(self):
+        async def no_cec(*a, **kw):
+            raise AssertionError("sleep/wake on a warm launch")
+        with mock.patch.object(appletv, "_cec_wake", no_cec), \
+             mock.patch.object(appletv, "_deeplink_get", lambda url, timeout: (200, b"ok")):
+            self.assertTrue(appletv.launch_deeplink("https://tv.apple.com/us/movie/x", cec_wake=False))
+
     def test_server_ok_then_play_pause_press_over_pyatv(self):
         fake = FakeAtv()
 
@@ -381,8 +444,10 @@ class DeeplinkAppTests(unittest.TestCase):
              mock.patch.object(appletv.asyncio, "sleep", mock.AsyncMock()), \
              mock.patch.object(appletv, "launch_sequence_async", fake_seq):
             self.assertTrue(appletv.launch_deeplink("plutotv://live-tv/star-trek-1", cec_wake=True))
-        self.assertEqual(fake.calls, [("launch", "com.celerity.DeepLink")])
-        self.assertEqual(launched, [("plutotv://live-tv/star-trek-1", True)])
+        # cold start: sleep/wake first (L3), then the app foregrounding, and the
+        # pyatv fallback is told the wake is already done
+        self.assertEqual(fake.calls, ["off", "on", "poll", "poll", ("launch", "com.celerity.DeepLink")])
+        self.assertEqual(launched, [("plutotv://live-tv/star-trek-1", False)])
 
     def test_server_error_status_falls_back(self):
         import urllib.error

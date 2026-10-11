@@ -131,12 +131,15 @@ Notes:
   (one Play/Pause): no relaunch, no sleep/wake, no chooser keys - tvOS resumes a title by itself on relaunch
   and the cold-start keys would pause it again. A different figure does a WARM launch when a TV action ran in the last
   `appletv_warm_minutes` (10): no sleep/wake, no chooser keys, just Play `appletv_url_warm_delay` (4) s after the
-  title opens - so swapping figures is quick. The first tap after a quiet spell does the full cold start. The Pi reconnects to the Apple TV around the sleep/wake and retries a failed launch
+  title opens - so swapping figures is quick. Both shortcuts first ask the box for its real power state: if someone
+  turned the TV off with the remote inside the window the Apple TV reports asleep and a full cold start is done instead
+  (a Play on a sleeping box shows nothing). The first tap after a quiet spell does the full cold start. The Pi reconnects to the Apple TV around the sleep/wake and retries a failed launch
   once on a fresh session (tvOS answers "Open URL failed" on a session that slept); set `appletv_ip` to make
   those reconnects near-instant.
 * `deeplink: <url or scheme>` goes through the **Deeplink** tvOS app (celerityapps, TestFlight) instead: with
   `deeplink_server: http://<apple-tv-ip>` at the top level the Pi calls its web server (`GET /open?target=...`),
-  which opens things pyatv's Companion launch cannot (Pluto `plutotv://live-tv/<slug>`, `vlc-x-callback://`,
+  which opens things pyatv's Companion launch cannot (on a cold start the Pi still sleeps/wakes the box over
+  pyatv first, so HDMI-CEC switches the TV input before the server is asked) (Pluto `plutotv://live-tv/<slug>`, `vlc-x-callback://`,
   raw `.m3u8` streams in the app's own player, Apple TV app movie pages). tvOS suspends the app - and its
   server - whenever another app is in front, so a refused connection is normal: the Pi opens the DeepLink app
   over pyatv (`deeplink_app_id`, default `com.celerity.DeepLink`), waits ~2.5 s and asks again; only if it
