@@ -90,6 +90,30 @@ async def scan_for_apple_tvs(timeout=5):
     return atvs
 
 
+async def _close_quietly(atv, timeout=3):
+    """pyatv's close() returns the disconnect tasks it just scheduled; left
+    un-awaited they surface at asyncio.run() shutdown as "unhandled exception
+    ... Event loop is closed" ERROR lines (one per lift-to-pause) when the
+    connection came from an earlier action's loop. Await them here and
+    swallow whatever a dead transport raises. The cap matters on the same-loop
+    path: Companion teardown is three request/response round trips, and a
+    half-open session after turn_off() would otherwise sit in them for pyatv's
+    5 s per message before the reconnect could start."""
+    try:
+        tasks = atv.close()
+    except Exception as e:
+        logger.debug(f"Apple TV close raised {e}")
+        return
+    if not tasks:
+        return
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout)
+    except asyncio.TimeoutError:
+        logger.info(f"Apple TV close did not finish within {timeout}s; continuing")
+    except Exception as e:
+        logger.debug(f"Apple TV close tasks raised {e}")
+
+
 async def connect(name=None, ip=None):
     """Connect to an Apple TV by name or IP address."""
     global _atv, _atv_name, _atv_loop
@@ -98,10 +122,7 @@ async def connect(name=None, ip=None):
     if _atv is not None:
         if _atv_loop is not asyncio.get_running_loop():
             logger.info("Cached Apple TV connection belongs to a finished event loop, reconnecting...")
-            try:
-                _atv.close()
-            except Exception:
-                pass
+            await _close_quietly(_atv)
             _atv = None
         else:
             try:
@@ -180,10 +201,9 @@ async def disconnect():
     """Disconnect from Apple TV."""
     global _atv, _atv_name, _atv_loop
     if _atv:
-        try:
-            _atv.close()
-        except Exception as e:
-            logger.debug(f"Apple TV close raised {e}")
+        # Short cap: this runs inside the wake/launch sequence (up to four
+        # reconnects), so a box that stopped answering must not stall it.
+        await _close_quietly(_atv, timeout=1)
         logger.info(f"Disconnected from {_atv_name}")
         _atv = None
         _atv_name = None
@@ -658,19 +678,17 @@ _config_loaded = False
 
 
 def reset_config():
-    """Forget the loaded config AND the cached connection, so the next action
-    reconnects with whatever credentials tags.yml holds now (a connection
-    made before a pairing existed would otherwise be reused without them)."""
-    global _config_loaded, _atv, _atv_name, _atv_loop
+    """Forget the loaded config and mark the cached connection stale, so the
+    next action reconnects with whatever credentials tags.yml holds now (a
+    connection made before a pairing existed would otherwise be reused
+    without them). This runs on the pad thread with no event loop, where
+    pyatv's close() cannot schedule its disconnect tasks (it raised "no
+    running event loop" and leaked the Companion socket per reload); leaving
+    `_atv` in place with `_atv_loop = None` makes the next connect() take the
+    stale-loop branch and close it properly."""
+    global _config_loaded, _atv_loop
     _config_loaded = False
     _atv_loop = None
-    if _atv is not None:
-        try:
-            _atv.close()
-        except Exception:
-            pass
-        _atv = None
-        _atv_name = None
 
 
 def load_config(tags):

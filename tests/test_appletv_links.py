@@ -193,6 +193,83 @@ class ConnectionCacheTests(unittest.TestCase):
         self.assertIn("close", fake.calls)
         appletv._atv = appletv._atv_loop = None
 
+    def test_close_tasks_from_a_dead_transport_are_awaited_and_swallowed(self):
+        """pyatv's close() hands back the disconnect tasks it scheduled; on a
+        connection from a finished loop they raise "Event loop is closed".
+        Un-awaited they were reported as ERROR at every asyncio.run() shutdown
+        (one per lift-to-pause on the living-room Pi)."""
+        class ClosingAtv(FakeAtv):
+            task = None
+
+            def close(self):
+                self.calls.append("close")
+
+                async def dead_disconnect():
+                    # pyatv's _sessionStop: a send over the old transport
+                    # after a yield, then "Event loop is closed".
+                    try:
+                        await asyncio.sleep(0)
+                    finally:
+                        raise RuntimeError("Event loop is closed")
+                self.task = asyncio.create_task(dead_disconnect())
+                return {self.task}
+
+        fake = ClosingAtv()
+        appletv._atv, appletv._atv_name = fake, "Living room"
+        appletv._atv_loop = object()
+
+        async def no_scan(timeout=5):
+            return []
+
+        async def run():
+            with mock.patch.object(appletv, "scan_for_apple_tvs", no_scan):
+                got = await appletv.connect()
+            # The discriminating check: on master the task was still pending
+            # here and asyncio.run()'s shutdown reported its exception.
+            self.assertTrue(fake.task.done())
+            self.assertIsInstance(fake.task.exception(), RuntimeError)
+            return got
+        self.assertIsNone(asyncio.run(run()))
+        self.assertIn("close", fake.calls)
+        appletv._atv = appletv._atv_loop = None
+
+    def test_close_quietly_edge_paths(self):
+        async def run():
+            class Raises:
+                def close(self):
+                    raise RuntimeError("no running event loop")
+            await appletv._close_quietly(Raises())  # must not raise
+
+            class NoTasks:
+                def close(self):
+                    return None
+            await appletv._close_quietly(NoTasks())
+
+            class NeverFinishes:
+                def close(self):
+                    self.task = asyncio.create_task(asyncio.sleep(60))
+                    return {self.task}
+            nf = NeverFinishes()
+            with self.assertLogs(appletv.logger, level="INFO") as cm:
+                t0 = asyncio.get_running_loop().time()
+                await appletv._close_quietly(nf, timeout=0.2)
+                elapsed = asyncio.get_running_loop().time() - t0
+            self.assertLess(elapsed, 2)
+            self.assertTrue(nf.task.done())  # cancelled by wait_for, not left behind
+            self.assertTrue(any("did not finish within 0.2s" in m for m in cm.output))
+        asyncio.run(run())
+
+    def test_disconnect_tolerates_close_without_tasks(self):
+        fake = FakeAtv()  # close() returns None, like the other fakes
+        appletv._atv, appletv._atv_name = fake, "Game Room"
+
+        async def run():
+            appletv._atv_loop = asyncio.get_running_loop()
+            await appletv.disconnect()
+        asyncio.run(run())
+        self.assertIsNone(appletv._atv)
+        self.assertEqual(fake.calls, ["close"])
+
     def test_pause_presses_play_pause_once(self):
         fake = FakeAtv()
 
@@ -390,7 +467,11 @@ class YoutubeDeepLinkTests(unittest.TestCase):
         self.assertEqual(youtube_deep_link("youtube://MmB9b5njVbA"), self.WANT)
         self.assertEqual(youtube_deep_link("youtube://www.youtube.com/watch?v=MmB9b5njVbA"), self.WANT)
 
-    def test_reset_config_drops_cached_connection(self):
+    def test_reset_config_marks_cached_connection_stale_and_next_connect_closes_it(self):
+        """reset_config() runs on the pad thread with no event loop, where
+        pyatv's close() cannot schedule its disconnect tasks (it leaked the
+        socket per tags.yml reload). It only forgets the loop; the next
+        action's connect() then closes the old device before reconnecting."""
         import app.appletv as appletv
 
         class FakeAtv:
@@ -401,10 +482,18 @@ class YoutubeDeepLinkTests(unittest.TestCase):
 
         fake = FakeAtv()
         appletv._atv, appletv._atv_name, appletv._config_loaded = fake, "Game Room", True
+        appletv._atv_loop = object()
         appletv.reset_config()
+        self.assertFalse(fake.closed)  # nothing to run the close tasks on here
+        self.assertIsNone(appletv._atv_loop)
+        self.assertFalse(appletv._config_loaded)
+
+        async def no_scan(timeout=5):
+            return []
+        with mock.patch.object(appletv, "scan_for_apple_tvs", no_scan):
+            self.assertIsNone(asyncio.run(appletv.connect()))
         self.assertTrue(fake.closed)
         self.assertIsNone(appletv._atv)
-        self.assertFalse(appletv._config_loaded)
 
     def test_whitespace_trimmed(self):
         self.assertEqual(youtube_deep_link("  MmB9b5njVbA \n"), self.WANT)
