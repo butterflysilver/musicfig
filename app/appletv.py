@@ -440,13 +440,16 @@ def deeplink_open_url(target, server=None):
     scheme (``something://``) is sent as ``target=``; anything else is taken
     as the display name of a deep link already saved in the app and sent as
     ``name=`` (404 when no such name exists)."""
-    base = (server or DEEPLINK_SERVER or "").rstrip("/")
+    base = str(server or DEEPLINK_SERVER or "").strip().rstrip("/")
+    if base and "://" not in base:
+        base = "http://" + base  # tags.yml may just name the box: Game-Room.local
     target = str(target).strip()
     key = "target" if "://" in target else "name"
     # The app's server takes the URL raw (its docs and the author's working
     # Apple TV app example: target=https://tv.apple.com/us/movie/...), so keep
-    # scheme and path as-is and only escape what would split our own query.
-    return f"{base}/open?{key}={urllib.parse.quote(target, safe=':/@-._~')}"
+    # scheme, path and any existing %xx escapes as-is and only escape what
+    # would split our own query string.
+    return f"{base}/open?{key}={urllib.parse.quote(target, safe=':/@%')}"
 
 
 def _deeplink_get(url, timeout):
@@ -469,13 +472,18 @@ def launch_deeplink(target, atv_name=None, cec_wake=False, ok_delay=0, ok_key="s
     if not target:
         logger.warning("deeplink tag is empty")
         return False
+    try:
+        ok_delay = float(ok_delay or 0)
+    except (TypeError, ValueError):
+        logger.warning("ok_delay is not a number (%r); ignoring it", ok_delay)
+        ok_delay = 0.0
     if DEEPLINK_SERVER:
         url = deeplink_open_url(target)
         try:
             status, body = _deeplink_get(url, DEEPLINK_TIMEOUT)
             if 200 <= status < 300:
                 logger.info(f"Deeplink app opened {target}")
-                if ok_delay and float(ok_delay) > 0:
+                if ok_delay > 0:
                     asyncio.run(press_after_async(ok_delay, ok_key, atv_name=atv_name))
                 return True
             logger.warning(f"Deeplink server answered {status} for {target}: {body[:120]!r}; trying pyatv")
@@ -564,7 +572,9 @@ def load_config(tags):
     if 'appletv_airplay_credentials' in tags:
         AIRPLAY_CREDENTIALS = tags['appletv_airplay_credentials']
     if 'deeplink_server' in tags:
-        DEEPLINK_SERVER = str(tags['deeplink_server'] or '').strip() or None
+        DEEPLINK_SERVER = str(tags['deeplink_server'] or '').strip().rstrip('/') or None
+        if DEEPLINK_SERVER and '://' not in DEEPLINK_SERVER:
+            DEEPLINK_SERVER = 'http://' + DEEPLINK_SERVER
         logger.info(f"Deeplink app server from config: {DEEPLINK_SERVER}")
         logger.info("Loaded AirPlay credentials from config")
 
