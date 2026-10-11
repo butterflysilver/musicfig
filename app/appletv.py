@@ -48,6 +48,7 @@ DEEPLINK_TIMEOUT = 4  # seconds; the server is on the LAN, anything slower is "n
 # give it a moment, and ask again. Bundle id from the Game Room app list.
 DEEPLINK_APP_ID = "com.celerity.DeepLink"
 DEEPLINK_FOREGROUND_WAIT = 2.5
+FIRST_WAKE_WINDOW = 8  # seconds to give the first turn_on before resending it
 
 
 async def scan_for_apple_tvs(timeout=5):
@@ -228,15 +229,18 @@ async def _cec_wake(atv, timeout=25, name=None, ip=None):
     if atv is None:
         logger.error("Apple TV not reachable after sleeping it")
         return False, None
-    woke = await _turn_on_and_wait(atv, timeout)
+    # A turn_on sent while the box is still dropping into sleep is lost (the
+    # Apple TV HD misses it every time, the 4K now and then), so give the first
+    # one only a short window and resend on a fresh session; the second gets
+    # the rest of the timeout. Cold-wake cost on the HD: ~15 s instead of ~35.
+    first = min(FIRST_WAKE_WINDOW, int(timeout))
+    woke = await _turn_on_and_wait(atv, first)
     if not woke:
-        # One stubborn retry: a turn_on sent while the box was still dropping
-        # into sleep is lost (game room 2026-10-10 21:45). Fresh session, again.
-        logger.warning("Apple TV did not report awake within %ss; sending turn_on again", timeout)
+        logger.info("Apple TV did not report awake within %ss; sending turn_on again", first)
         again = await _reconnect(name=name, ip=ip)
         if again is not None:
             atv = again
-            woke = await _turn_on_and_wait(atv, max(10, int(timeout) // 2))
+            woke = await _turn_on_and_wait(atv, max(10, int(timeout) - first))
     if woke:
         await asyncio.sleep(2)  # let tvOS settle before a launch
         logger.info("Apple TV woken for HDMI-CEC input switch")
@@ -285,6 +289,29 @@ async def _launch_with_retry(atv, url, name=None, ip=None):
 OK_KEYS = ("select", "play_pause", "play")
 
 
+def parse_ok_delays(ok_delay, n):
+    """``ok_delay`` is one number (same gap before every key) or a list /
+    "12, 5" string: the first key after 12 s, each later key 5 s after the
+    previous; the last value repeats for extra keys. Returns ``n`` floats,
+    non-numbers become 0."""
+    if isinstance(ok_delay, (list, tuple)):
+        parts = list(ok_delay)
+    else:
+        parts = str(ok_delay if ok_delay is not None else 0).replace(";", ",").split(",")
+    delays = []
+    for part in parts:
+        try:
+            delays.append(max(0.0, float(part)))
+        except (TypeError, ValueError):
+            logger.warning("ok_delay %r is not a number; ignoring it", part)
+            delays.append(0.0)
+    if not delays:
+        delays = [0.0]
+    while len(delays) < n:
+        delays.append(delays[-1])
+    return delays[:n]
+
+
 def parse_ok_keys(ok_key):
     """``ok_key`` may be one key or a sequence ("select, play_pause", or a
     list): the Apple TV app shows a "Who's watching?" chooser first, so a
@@ -306,10 +333,10 @@ def parse_ok_keys(ok_key):
 
 
 async def _press_keys(atv, keys, delay):
-    """Wait ``delay`` seconds, press a key, repeat for each key in order."""
-    for key in keys:
+    """For each key in order: wait its delay (see parse_ok_delays), press."""
+    for key, wait in zip(keys, parse_ok_delays(delay, len(keys))):
         try:
-            await asyncio.sleep(delay)
+            await asyncio.sleep(wait)
             await getattr(atv.remote_control, key)()
             logger.info(f"Apple TV: {key} pressed")
         except Exception as e:
@@ -323,14 +350,11 @@ async def launch_sequence_async(url, cec_wake=False, ok_delay=0, atv_name=None, 
     link (one retry on a fresh connection), optionally press a remote key
     after ok_delay seconds: "select" for an account/profile chooser,
     "play_pause" (or "play") for apps that land on the title page and wait,
-    like the Apple TV app; "select, play_pause" presses both, ok_delay apart.
+    like the Apple TV app; "select, play_pause" presses both. ok_delay is one
+    gap for every key or "12, 5" (first key after 12 s, then 5 s apart).
     Returns True if the launch succeeded."""
     keys = parse_ok_keys(ok_key)
-    try:
-        ok_delay = float(ok_delay or 0)
-    except (TypeError, ValueError):
-        logger.warning("ok_delay is not a number (%r); ignoring it", ok_delay)
-        ok_delay = 0.0
+    delays = parse_ok_delays(ok_delay, len(keys))
     atv = await connect(name=atv_name, ip=atv_ip)
     if not atv:
         return False
@@ -351,8 +375,8 @@ async def launch_sequence_async(url, cec_wake=False, ok_delay=0, atv_name=None, 
     ok, atv = await _launch_with_retry(atv, url, name=atv_name, ip=atv_ip)
     if not ok:
         return False
-    if ok_delay > 0:
-        await _press_keys(atv, keys, ok_delay)
+    if any(d > 0 for d in delays):
+        await _press_keys(atv, keys, delays)
     return True
 
 
@@ -522,11 +546,7 @@ def launch_deeplink(target, atv_name=None, cec_wake=False, ok_delay=0, ok_key="s
     if not target:
         logger.warning("deeplink tag is empty")
         return False
-    try:
-        ok_delay = float(ok_delay or 0)
-    except (TypeError, ValueError):
-        logger.warning("ok_delay is not a number (%r); ignoring it", ok_delay)
-        ok_delay = 0.0
+    delays = parse_ok_delays(ok_delay, len(parse_ok_keys(ok_key)))
     if DEEPLINK_SERVER:
         url = deeplink_open_url(target)
         for attempt in (1, 2):
@@ -534,8 +554,8 @@ def launch_deeplink(target, atv_name=None, cec_wake=False, ok_delay=0, ok_key="s
                 status, body = _deeplink_get(url, DEEPLINK_TIMEOUT)
                 if 200 <= status < 300:
                     logger.info(f"Deeplink app opened {target}")
-                    if ok_delay > 0:
-                        asyncio.run(press_after_async(ok_delay, ok_key, atv_name=atv_name))
+                    if any(d > 0 for d in delays):
+                        asyncio.run(press_after_async(delays, ok_key, atv_name=atv_name))
                     return True
                 logger.warning(f"Deeplink server answered {status} for {target}: {body[:120]!r}; trying pyatv")
                 break
@@ -580,7 +600,7 @@ async def press_after_async(delay, key="select", atv_name=None):
     atv = await connect(name=atv_name)
     if not atv:
         return False
-    return await _press_keys(atv, parse_ok_keys(key), float(delay))
+    return await _press_keys(atv, parse_ok_keys(key), delay)
 
 
 def pause(atv_name=None):

@@ -120,7 +120,9 @@ Notes:
   `youtube_ok_delay: 4` presses Select on the Apple TV that many seconds after the launch (YouTube's account
   chooser picks its first account). `appletv_url: <anything tvOS will open>` is the generic form (Apple TV app
   movies, other apps' URL schemes, Deeplink-app bookmarks) with the same `appletv_cec_wake` and its own
-  `appletv_url_ok_delay` / `appletv_url_ok_key`: one key or a sequence pressed `ok_delay` apart. The Apple TV
+  `appletv_url_ok_delay` / `appletv_url_ok_key`: one key or a sequence; the delay is one gap for every key or
+  a list (`12, 5`: first key 12 s after the launch, the next 5 s later). An Apple TV HD needs ~12 s after a
+  cold wake before the chooser is up, a 4K ~7 s. The Apple TV
   app on a multi-account box shows "Who's watching?" first and then waits on the title page, so
   `appletv_url_ok_key: select, play_pause` with `appletv_url_ok_delay: 3` picks the highlighted account and
   starts playback (the Deeplink developer's own Shortcut does open, wait, Play/Pause). Lifting the figure

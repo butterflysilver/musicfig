@@ -86,8 +86,8 @@ class LaunchSequenceTests(unittest.TestCase):
         fake = FakeAtv()
         fake.never_wakes = True
         self.assertTrue(self.run_seq(fake, cec_wake=True))
-        self.assertEqual(fake.calls.count("on"), 2)  # second turn_on after the timeout
-        self.assertEqual(fake.calls.count("poll"), 25 + 12)
+        self.assertEqual(fake.calls.count("on"), 2)  # second turn_on after the short first window
+        self.assertEqual(fake.calls.count("poll"), 8 + 17)
         self.assertEqual(fake.calls[-2:], ["close", ("launch", "youtube://x")])
 
     def test_launch_retry_wakes_the_box_first(self):
@@ -124,6 +124,27 @@ class LaunchSequenceTests(unittest.TestCase):
     def test_key_sequence_select_then_play_pause(self):
         fake = FakeAtv()
         self.assertTrue(self.run_seq(fake, ok_delay=3, ok_key="select, play_pause"))
+        self.assertEqual(fake.calls[-2:], ["select", "play_pause"])
+
+    def test_parse_ok_delays(self):
+        self.assertEqual(appletv.parse_ok_delays(7, 2), [7.0, 7.0])
+        self.assertEqual(appletv.parse_ok_delays("12, 5", 3), [12.0, 5.0, 5.0])
+        self.assertEqual(appletv.parse_ok_delays([3], 2), [3.0, 3.0])
+        self.assertEqual(appletv.parse_ok_delays("four", 1), [0.0])
+        self.assertEqual(appletv.parse_ok_delays(None, 1), [0.0])
+
+    def test_per_key_delays_are_applied_in_order(self):
+        fake = FakeAtv()
+        sleeps = []
+
+        async def rec(n):
+            sleeps.append(n)
+        with mock.patch.object(appletv.asyncio, "sleep", rec):
+            async def fake_connect(name=None, ip=None):
+                return fake
+            with mock.patch.object(appletv, "connect", fake_connect):
+                self.assertTrue(asyncio.run(appletv.launch_sequence_async("x://y", ok_delay="12, 5", ok_key="select, play_pause")))
+        self.assertEqual(sleeps[-2:], [12.0, 5.0])
         self.assertEqual(fake.calls[-2:], ["select", "play_pause"])
 
     def test_parse_ok_keys(self):
