@@ -13,7 +13,7 @@ lights: on
 # appletv_cec_wake: true     # sleep/wake the Apple TV so the TV switches to its input (HDMI-CEC)
 # youtube_ok_delay: 4        # press Select N s after the launch (YouTube account chooser)
 # appletv_ip: 192.168.1.50   # optional; makes reconnects around the CEC wake near-instant
-# appletv_url_ok_delay: 0    # press a key N s after an appletv_url:/deeplink: launch (0 = never)
+# appletv_url_ok_delay: 12, 5  # first key N s after the launch, later keys M s apart (one number = same gap; 0 = never)
 # appletv_url_ok_key: select, play_pause   # keys pressed ok_delay apart: Select picks the "Who's watching?"
 #                                          # account, Play/Pause starts the title (Apple TV app)
 # deeplink_server: http://192.168.1.50   # the Deeplink tvOS app's web server, for deeplink: tags
