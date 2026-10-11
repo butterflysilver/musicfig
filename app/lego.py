@@ -631,7 +631,8 @@ class Base():
                             logger.info('Launching Apple TV URL: %s' % atv_url)
                             if appletv.launch_url(atv_url,
                                                   cec_wake=bool(tags.get('appletv_cec_wake', False)),
-                                                  ok_delay=tags.get('appletv_url_ok_delay', 0) or 0):
+                                                  ok_delay=tags.get('appletv_url_ok_delay', 0) or 0,
+                                                  ok_key=tags.get('appletv_url_ok_key', 'select') or 'select'):
                                 self.base.switch_pad(pad, self.PURPLE)
                             else:
                                 self.base.flash_pad(pad=pad, on_length=10, off_length=10,
@@ -645,7 +646,8 @@ class Base():
                             logger.info('Deeplink: %s' % dl_target)
                             if appletv.launch_deeplink(dl_target,
                                                        cec_wake=bool(tags.get('appletv_cec_wake', False)),
-                                                       ok_delay=tags.get('appletv_url_ok_delay', 0) or 0):
+                                                       ok_delay=tags.get('appletv_url_ok_delay', 0) or 0,
+                                                       ok_key=tags.get('appletv_url_ok_key', 'select') or 'select'):
                                 self.base.switch_pad(pad, self.PURPLE)
                             else:
                                 self.base.flash_pad(pad=pad, on_length=10, off_length=10,

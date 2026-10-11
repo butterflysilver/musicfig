@@ -259,11 +259,18 @@ async def _launch_with_retry(atv, url, name=None, ip=None):
     return False, atv
 
 
-async def launch_sequence_async(url, cec_wake=False, ok_delay=0, atv_name=None, atv_ip=None):
+OK_KEYS = ("select", "play_pause", "play")
+
+
+async def launch_sequence_async(url, cec_wake=False, ok_delay=0, atv_name=None, atv_ip=None, ok_key="select"):
     """One tag action: optionally sleep/wake for HDMI-CEC, launch the deep
-    link (one retry on a fresh connection), optionally press Select after
-    ok_delay seconds (an app's account chooser). Returns True if the launch
-    succeeded."""
+    link (one retry on a fresh connection), optionally press a remote key
+    after ok_delay seconds: "select" for an account/profile chooser,
+    "play_pause" (or "play") for apps that land on the title page and wait,
+    like the Apple TV app. Returns True if the launch succeeded."""
+    if ok_key not in OK_KEYS:
+        logger.warning("ok_key %r unknown (want one of %s); using select", ok_key, ", ".join(OK_KEYS))
+        ok_key = "select"
     try:
         ok_delay = float(ok_delay or 0)
     except (TypeError, ValueError):
@@ -292,10 +299,10 @@ async def launch_sequence_async(url, cec_wake=False, ok_delay=0, atv_name=None, 
     if ok_delay > 0:
         try:
             await asyncio.sleep(ok_delay)
-            await atv.remote_control.select()
-            logger.info("Apple TV: Select pressed")
+            await getattr(atv.remote_control, ok_key)()
+            logger.info(f"Apple TV: {ok_key} pressed")
         except Exception as e:
-            logger.error(f"Failed to press Select on Apple TV: {e}")
+            logger.error(f"Failed to press {ok_key} on Apple TV: {e}")
     return True
 
 
@@ -415,7 +422,7 @@ def launch_youtube(video_id, atv_name=None, cec_wake=False, ok_delay=0):
                                              ok_delay=ok_delay, atv_name=atv_name))
 
 
-def launch_url(url, atv_name=None, cec_wake=False, ok_delay=0):
+def launch_url(url, atv_name=None, cec_wake=False, ok_delay=0, ok_key="select"):
     """Launch any deep link / URL scheme on the Apple TV (the `appletv_url:`
     tag action): whatever string tvOS will open, passed through untouched.
     Same optional sleep/wake and Select press as the youtube action."""
@@ -423,13 +430,20 @@ def launch_url(url, atv_name=None, cec_wake=False, ok_delay=0):
     if not url:
         logger.warning("appletv_url tag is empty")
         return False
-    return asyncio.run(launch_sequence_async(url, cec_wake=cec_wake, ok_delay=ok_delay, atv_name=atv_name))
+    return asyncio.run(launch_sequence_async(url, cec_wake=cec_wake, ok_delay=ok_delay, atv_name=atv_name,
+                                             ok_key=ok_key))
 
 
 def deeplink_open_url(target, server=None):
-    """URL the Deeplink app's web server opens for ``target``."""
+    """URL the Deeplink app's web server opens for ``target`` (its documented
+    GET /open: https://celerityapps.com/deeplinks/docs). A target with a
+    scheme (``something://``) is sent as ``target=``; anything else is taken
+    as the display name of a deep link already saved in the app and sent as
+    ``name=`` (404 when no such name exists)."""
     base = (server or DEEPLINK_SERVER or "").rstrip("/")
-    return f"{base}/open?target={urllib.parse.quote(str(target).strip(), safe='')}"
+    target = str(target).strip()
+    key = "target" if "://" in target else "name"
+    return f"{base}/open?{key}={urllib.parse.quote(target, safe='')}"
 
 
 def _deeplink_get(url, timeout):
@@ -437,15 +451,17 @@ def _deeplink_get(url, timeout):
         return r.status, r.read(512)
 
 
-def launch_deeplink(target, atv_name=None, cec_wake=False, ok_delay=0):
+def launch_deeplink(target, atv_name=None, cec_wake=False, ok_delay=0, ok_key="select"):
     """The `deeplink:` tag action. Ask the Deeplink app on the Apple TV to
     open ``target`` (anything it supports: https pages, app URL schemes such
     as plutotv:// or vlc-x-callback://, raw .m3u8 streams). The app's server
     does not always come back after the Apple TV reboots (force-quit and
     reopen the app fixes it), so when it does not answer the same target is
     handed to pyatv's launch_app instead and the fallback is logged in plain
-    words. cec_wake/ok_delay apply to the pyatv path only; the Deeplink path
-    presumes an awake Apple TV (a sleeping one has no web server)."""
+    words. cec_wake applies to the pyatv path only (the Deeplink path presumes
+    an awake Apple TV: a sleeping one has no web server); the ok_delay key
+    press happens on either path, since the TV app waits for Play after the
+    page opens no matter who opened it."""
     target = str(target or "").strip()
     if not target:
         logger.warning("deeplink tag is empty")
@@ -456,14 +472,39 @@ def launch_deeplink(target, atv_name=None, cec_wake=False, ok_delay=0):
             status, body = _deeplink_get(url, DEEPLINK_TIMEOUT)
             if 200 <= status < 300:
                 logger.info(f"Deeplink app opened {target}")
+                if ok_delay and float(ok_delay) > 0:
+                    asyncio.run(press_after_async(ok_delay, ok_key, atv_name=atv_name))
                 return True
             logger.warning(f"Deeplink server answered {status} for {target}: {body[:120]!r}; trying pyatv")
+        except urllib.error.HTTPError as e:
+            if e.code == 404 and "://" not in target:
+                logger.error(f"Deeplink app has no saved deep link named {target!r}; nothing to fall back to")
+                return False
+            logger.warning(f"Deeplink server answered {e.code} for {target}; trying pyatv")
         except (urllib.error.URLError, OSError, ValueError) as e:
             logger.warning(f"Deeplink server at {DEEPLINK_SERVER} not answering ({e}); "
                            "on the Apple TV force-quit and reopen the Deeplink app. Trying pyatv")
     else:
         logger.info("deeplink_server not configured; opening via pyatv")
-    return asyncio.run(launch_sequence_async(target, cec_wake=cec_wake, ok_delay=ok_delay, atv_name=atv_name))
+    return asyncio.run(launch_sequence_async(target, cec_wake=cec_wake, ok_delay=ok_delay, atv_name=atv_name,
+                                             ok_key=ok_key))
+
+
+async def press_after_async(delay, key="select", atv_name=None):
+    """Wait ``delay`` seconds, then press one remote key over pyatv."""
+    if key not in OK_KEYS:
+        key = "select"
+    atv = await connect(name=atv_name)
+    if not atv:
+        return False
+    try:
+        await asyncio.sleep(float(delay))
+        await getattr(atv.remote_control, key)()
+        logger.info(f"Apple TV: {key} pressed")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to press {key} on Apple TV: {e}")
+        return False
 
 
 def list_apple_tvs():

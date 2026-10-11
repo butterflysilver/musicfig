@@ -44,6 +44,9 @@ class FakeAtv:
     async def select(self):
         self.calls.append("select")
 
+    async def play_pause(self):
+        self.calls.append("play_pause")
+
     def close(self):
         self.calls.append("close")
 
@@ -102,6 +105,16 @@ class LaunchSequenceTests(unittest.TestCase):
         launches = [c for c in fake.calls if c == ("launch", "youtube://x")]
         self.assertEqual(len(launches), 2)
         self.assertEqual(fake.calls[1], "close")  # reconnect between the two attempts
+        self.assertEqual(fake.calls[-1], "select")
+
+    def test_play_pause_as_the_ok_key(self):
+        fake = FakeAtv()
+        self.assertTrue(self.run_seq(fake, ok_delay=2, ok_key="play_pause"))
+        self.assertEqual(fake.calls[-1], "play_pause")
+
+    def test_unknown_ok_key_falls_back_to_select(self):
+        fake = FakeAtv()
+        self.assertTrue(self.run_seq(fake, ok_delay=2, ok_key="menu"))
         self.assertEqual(fake.calls[-1], "select")
 
     def test_bad_ok_delay_is_ignored(self):
@@ -164,6 +177,17 @@ class DeeplinkAppTests(unittest.TestCase):
             self.assertTrue(appletv.launch_deeplink("https://tv.apple.com/us/movie/x"))
         self.assertEqual(seen, ["http://192.168.1.50/open?target=https%3A%2F%2Ftv.apple.com%2Fus%2Fmovie%2Fx"])
 
+    def test_server_ok_then_play_pause_press_over_pyatv(self):
+        fake = FakeAtv()
+
+        async def fake_connect(name=None, ip=None):
+            return fake
+        with mock.patch.object(appletv, "_deeplink_get", lambda url, timeout: (200, b"ok")), \
+             mock.patch.object(appletv, "connect", fake_connect), \
+             mock.patch.object(appletv.asyncio, "sleep", mock.AsyncMock()):
+            self.assertTrue(appletv.launch_deeplink("https://tv.apple.com/us/movie/x", ok_delay=3, ok_key="play_pause"))
+        self.assertEqual(fake.calls, ["play_pause"])
+
     def test_server_down_falls_back_to_pyatv_with_the_same_target(self):
         import urllib.error
 
@@ -171,7 +195,7 @@ class DeeplinkAppTests(unittest.TestCase):
             raise urllib.error.URLError("connection refused")
         launched = []
 
-        async def fake_seq(url, cec_wake=False, ok_delay=0, atv_name=None, atv_ip=None):
+        async def fake_seq(url, cec_wake=False, ok_delay=0, atv_name=None, atv_ip=None, ok_key="select"):
             launched.append((url, cec_wake))
             return True
         with mock.patch.object(appletv, "_deeplink_get", down), mock.patch.object(appletv, "launch_sequence_async", fake_seq):
@@ -193,6 +217,17 @@ class DeeplinkAppTests(unittest.TestCase):
         with mock.patch.object(appletv, "_deeplink_get", side_effect=AssertionError("no server call expected")), \
              mock.patch.object(appletv, "launch_sequence_async", fake_seq):
             self.assertTrue(appletv.launch_deeplink("youtube://www.youtube.com/watch?v=abc"))
+
+    def test_saved_name_uses_the_name_form(self):
+        self.assertEqual(appletv.deeplink_open_url("Toy Story"), "http://192.168.1.50/open?name=Toy%20Story")
+
+    def test_unknown_saved_name_is_an_error_not_a_pyatv_fallback(self):
+        import urllib.error
+
+        def missing(url, timeout):
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+        with mock.patch.object(appletv, "_deeplink_get", missing),              mock.patch.object(appletv, "launch_sequence_async", side_effect=AssertionError("pyatv used")):
+            self.assertFalse(appletv.launch_deeplink("No Such Bookmark"))
 
     def test_empty_target(self):
         self.assertFalse(appletv.launch_deeplink(" "))

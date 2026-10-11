@@ -120,7 +120,9 @@ Notes:
   `youtube_ok_delay: 4` presses Select on the Apple TV that many seconds after the launch (YouTube's account
   chooser picks its first account). `appletv_url: <anything tvOS will open>` is the generic form (Apple TV app
   movies, other apps' URL schemes, Deeplink-app bookmarks) with the same `appletv_cec_wake` and its own
-  `appletv_url_ok_delay`. The Pi reconnects to the Apple TV around the sleep/wake and retries a failed launch
+  `appletv_url_ok_delay` / `appletv_url_ok_key` (`select`, or `play_pause` for the Apple TV app, which opens
+  the title page and waits for Play - the Deeplink developer's own Shortcut does exactly that: open, wait
+  1-3 s, Play/Pause). The Pi reconnects to the Apple TV around the sleep/wake and retries a failed launch
   once on a fresh session (tvOS answers "Open URL failed" on a session that slept); set `appletv_ip` to make
   those reconnects near-instant.
 * `deeplink: <url or scheme>` goes through the **Deeplink** tvOS app (celerityapps, TestFlight) instead: with
@@ -128,7 +130,9 @@ Notes:
   which opens things pyatv's Companion launch cannot (Pluto `plutotv://live-tv/<slug>`, `vlc-x-callback://`,
   raw `.m3u8` streams in the app's own player, Apple TV app movie pages). When that server does not answer
   (it does not always come back after the Apple TV reboots - force-quit and reopen the app on the TV) the same
-  target is handed to pyatv and the fallback is logged. YouTube links still want the `youtube://` form.
+  target is handed to pyatv and the fallback is logged. YouTube links still want the `youtube://` form. A value
+  without a scheme (`deeplink: Toy Story`) is the display name of a deep link saved in the app (`/open?name=`),
+  so a link validated on the phone first can be reused by name. API: https://celerityapps.com/deeplinks/docs
 * A room with no entry in `room_homepods` makes `"@room"` resolve to nothing, so the tag falls back to its
   other actions rather than playing on the wrong speaker.
 
