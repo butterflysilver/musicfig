@@ -98,6 +98,10 @@ identifier:
     name: Creeper
     youtube: https://www.youtube.com/watch?v=dQw4w9WgXcQ   # any watch / youtu.be link or a bare video id
 
+  04112233445582:                 # made-up UID
+    name: Toy Story (Apple TV app)
+    appletv_url: https://tv.apple.com/us/movie/toy-story/umc.cmc.3l8b0kd7u1fd3y8b2fdxzg0ja   # passed to tvOS untouched
+
   04aabbccdd0081:                 # made-up UID
     name: Goodnight Moon (on the Yoto)
     yoto: abc12                   # a card id from the Yoto library, played on the Yoto player
@@ -114,7 +118,17 @@ Notes:
   plain https links. Two optional top-level keys for the `youtube:` action: `appletv_cec_wake: true` sleeps and
   wakes the Apple TV before the launch so the TV turns on / switches to its input over HDMI-CEC (adds ~8 s);
   `youtube_ok_delay: 4` presses Select on the Apple TV that many seconds after the launch (YouTube's account
-  chooser picks its first account).
+  chooser picks its first account). `appletv_url: <anything tvOS will open>` is the generic form (Apple TV app
+  movies, other apps' URL schemes, Deeplink-app bookmarks) with the same `appletv_cec_wake` and its own
+  `appletv_url_ok_delay`. The Pi reconnects to the Apple TV around the sleep/wake and retries a failed launch
+  once on a fresh session (tvOS answers "Open URL failed" on a session that slept); set `appletv_ip` to make
+  those reconnects near-instant.
+* `deeplink: <url or scheme>` goes through the **Deeplink** tvOS app (celerityapps, TestFlight) instead: with
+  `deeplink_server: http://<apple-tv-ip>` at the top level the Pi calls its web server (`GET /open?target=...`),
+  which opens things pyatv's Companion launch cannot (Pluto `plutotv://live-tv/<slug>`, `vlc-x-callback://`,
+  raw `.m3u8` streams in the app's own player, Apple TV app movie pages). When that server does not answer
+  (it does not always come back after the Apple TV reboots - force-quit and reopen the app on the TV) the same
+  target is handed to pyatv and the fallback is logged. YouTube links still want the `youtube://` form.
 * A room with no entry in `room_homepods` makes `"@room"` resolve to nothing, so the tag falls back to its
   other actions rather than playing on the wrong speaker.
 

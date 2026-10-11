@@ -620,6 +620,36 @@ class Base():
                             else:
                                 self.base.flash_pad(pad=pad, on_length=10, off_length=10,
                                                    pulse_count=6, colour=self.RED)
+                        # Any other Apple TV deep link / URL scheme, passed through untouched
+                        # (Apple TV app movies, Deeplink app bookmarks, ...). Same optional
+                        # appletv_cec_wake; appletv_url_ok_delay presses Select afterwards.
+                        if ('appletv_url' in tags['identifier'][identifier]) and appletv.activated():
+                            self.stopMp3()
+                            appletv.load_config(tags)
+                            self.switchHdmiToAppleTv(tags)
+                            atv_url = tags['identifier'][identifier]['appletv_url']
+                            logger.info('Launching Apple TV URL: %s' % atv_url)
+                            if appletv.launch_url(atv_url,
+                                                  cec_wake=bool(tags.get('appletv_cec_wake', False)),
+                                                  ok_delay=tags.get('appletv_url_ok_delay', 0) or 0):
+                                self.base.switch_pad(pad, self.PURPLE)
+                            else:
+                                self.base.flash_pad(pad=pad, on_length=10, off_length=10,
+                                                   pulse_count=6, colour=self.RED)
+                        # Deeplink app on the Apple TV (GET /open?target=...), pyatv as fallback
+                        if ('deeplink' in tags['identifier'][identifier]) and appletv.activated():
+                            self.stopMp3()
+                            appletv.load_config(tags)
+                            self.switchHdmiToAppleTv(tags)
+                            dl_target = tags['identifier'][identifier]['deeplink']
+                            logger.info('Deeplink: %s' % dl_target)
+                            if appletv.launch_deeplink(dl_target,
+                                                       cec_wake=bool(tags.get('appletv_cec_wake', False)),
+                                                       ok_delay=tags.get('appletv_url_ok_delay', 0) or 0):
+                                self.base.switch_pad(pad, self.PURPLE)
+                            else:
+                                self.base.flash_pad(pad=pad, on_length=10, off_length=10,
+                                                   pulse_count=6, colour=self.RED)
                         # HomePod / AirPlay streaming
                         if ('airplay' in tags['identifier'][identifier]):
                             self.stopMp3()

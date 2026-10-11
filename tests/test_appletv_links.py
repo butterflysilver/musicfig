@@ -15,6 +15,8 @@ class FakeAtv:
     def __init__(self):
         self.calls = []
         self._state = "PowerState.On"
+        self.never_wakes = False
+        self.fail_launches = 0
         self.power = self
         self.apps = self
         self.remote_control = self
@@ -22,7 +24,7 @@ class FakeAtv:
     @property
     def power_state(self):
         self.calls.append("poll")
-        if self.calls.count("poll") >= 2:
+        if self.calls.count("poll") >= 2 and not self.never_wakes:
             self._state = "PowerState.On"
         return self._state
 
@@ -35,33 +37,54 @@ class FakeAtv:
 
     async def launch_app(self, url):
         self.calls.append(("launch", url))
+        if self.fail_launches > 0:
+            self.fail_launches -= 1
+            raise RuntimeError("Open URL failed")
 
     async def select(self):
         self.calls.append("select")
 
     def close(self):
-        pass
+        self.calls.append("close")
 
 
 class LaunchSequenceTests(unittest.TestCase):
     def run_seq(self, fake, **kw):
+        """connect() always hands back the same fake; a reconnect is visible
+        as a "close" in the call list (disconnect closes the cached device)."""
         async def fake_connect(name=None, ip=None):
+            appletv._atv = fake
+            appletv._atv_loop = asyncio.get_running_loop()
             return fake
+        appletv._atv = None
         with mock.patch.object(appletv, "connect", fake_connect), mock.patch.object(appletv.asyncio, "sleep", mock.AsyncMock()):
-            return asyncio.run(appletv.launch_sequence_async("youtube://x", **kw))
+            try:
+                return asyncio.run(appletv.launch_sequence_async("youtube://x", **kw))
+            finally:
+                appletv._atv = None
+                appletv._atv_loop = None
 
     def test_plain_launch(self):
         fake = FakeAtv()
         self.assertTrue(self.run_seq(fake))
         self.assertEqual(fake.calls, [("launch", "youtube://x")])
 
-    def test_cec_wake_then_launch_then_select(self):
+    def test_cec_wake_reconnects_around_the_sleep_then_launches_then_selects(self):
         fake = FakeAtv()
         self.assertTrue(self.run_seq(fake, cec_wake=True, ok_delay=4))
-        self.assertEqual(fake.calls[:2], ["off", "on"])
+        # off -> fresh session -> on -> poll ... -> fresh session -> launch -> select
+        self.assertEqual(fake.calls[:3], ["off", "close", "on"])
         self.assertIn(("launch", "youtube://x"), fake.calls)
+        launch_at = fake.calls.index(("launch", "youtube://x"))
+        self.assertEqual(fake.calls[launch_at - 1], "close")  # launched on a reconnected session
         self.assertEqual(fake.calls[-1], "select")
-        self.assertLess(fake.calls.index(("launch", "youtube://x")), fake.calls.index("select"))
+
+    def test_cec_wake_timeout_still_launches_on_a_fresh_session(self):
+        fake = FakeAtv()
+        fake.never_wakes = True
+        self.assertTrue(self.run_seq(fake, cec_wake=True))
+        self.assertEqual(fake.calls.count("poll"), 25)
+        self.assertEqual(fake.calls[-2:], ["close", ("launch", "youtube://x")])
 
     def test_failed_wake_still_launches(self):
         fake = FakeAtv()
@@ -72,25 +95,107 @@ class LaunchSequenceTests(unittest.TestCase):
         self.assertTrue(self.run_seq(fake, cec_wake=True))
         self.assertIn(("launch", "youtube://x"), fake.calls)
 
+    def test_launch_retries_once_on_a_fresh_session(self):
+        fake = FakeAtv()
+        fake.fail_launches = 1
+        self.assertTrue(self.run_seq(fake, ok_delay=4))
+        launches = [c for c in fake.calls if c == ("launch", "youtube://x")]
+        self.assertEqual(len(launches), 2)
+        self.assertEqual(fake.calls[1], "close")  # reconnect between the two attempts
+        self.assertEqual(fake.calls[-1], "select")
+
     def test_bad_ok_delay_is_ignored(self):
         fake = FakeAtv()
         self.assertTrue(self.run_seq(fake, ok_delay="four"))
         self.assertEqual(fake.calls, [("launch", "youtube://x")])
 
-    def test_launch_failure_is_false(self):
+    def test_launch_failure_twice_is_false(self):
         fake = FakeAtv()
-
-        async def boom(url):
-            raise RuntimeError("Open URL failed")
-        fake.launch_app = boom
+        fake.fail_launches = 99
         self.assertFalse(self.run_seq(fake, ok_delay=4))
         self.assertNotIn("select", fake.calls)
+        self.assertEqual(len([c for c in fake.calls if c == ("launch", "youtube://x")]), 2)
 
     def test_no_apple_tv(self):
         async def none_connect(name=None, ip=None):
             return None
         with mock.patch.object(appletv, "connect", none_connect):
             self.assertFalse(asyncio.run(appletv.launch_sequence_async("youtube://x")))
+
+
+class ConnectionCacheTests(unittest.TestCase):
+    def test_connection_from_a_finished_loop_is_dropped(self):
+        """Each tag action is its own asyncio.run(); a device cached by the
+        previous run must not be reused (its commands fail with Open URL failed)."""
+        fake = FakeAtv()
+        appletv._atv, appletv._atv_name = fake, "Game Room"
+        appletv._atv_loop = object()  # some other, finished loop
+
+        async def no_scan(timeout=5):
+            return []
+        with mock.patch.object(appletv, "scan_for_apple_tvs", no_scan):
+            got = asyncio.run(appletv.connect())
+        self.assertIsNone(got)  # had to rescan (and found nothing) instead of reusing the stale device
+        self.assertIn("close", fake.calls)
+        appletv._atv = appletv._atv_loop = None
+
+    def test_launch_url_rejects_empty(self):
+        self.assertFalse(appletv.launch_url("   "))
+
+
+class DeeplinkAppTests(unittest.TestCase):
+    """deeplink: tag -> the Deeplink app's web server, pyatv when it is down."""
+
+    def setUp(self):
+        self._server = appletv.DEEPLINK_SERVER
+        appletv.DEEPLINK_SERVER = "http://192.168.1.50"
+
+    def tearDown(self):
+        appletv.DEEPLINK_SERVER = self._server
+
+    def test_open_url_is_encoded(self):
+        self.assertEqual(appletv.deeplink_open_url("plutotv://live-tv/star-trek-1?x=1&y=2"),
+                         "http://192.168.1.50/open?target=plutotv%3A%2F%2Flive-tv%2Fstar-trek-1%3Fx%3D1%26y%3D2")
+
+    def test_server_ok_means_no_pyatv(self):
+        seen = []
+        with mock.patch.object(appletv, "_deeplink_get", lambda url, timeout: (seen.append(url), (200, b"ok"))[1]), \
+             mock.patch.object(appletv, "launch_sequence_async", side_effect=AssertionError("pyatv used")):
+            self.assertTrue(appletv.launch_deeplink("https://tv.apple.com/us/movie/x"))
+        self.assertEqual(seen, ["http://192.168.1.50/open?target=https%3A%2F%2Ftv.apple.com%2Fus%2Fmovie%2Fx"])
+
+    def test_server_down_falls_back_to_pyatv_with_the_same_target(self):
+        import urllib.error
+
+        def down(url, timeout):
+            raise urllib.error.URLError("connection refused")
+        launched = []
+
+        async def fake_seq(url, cec_wake=False, ok_delay=0, atv_name=None, atv_ip=None):
+            launched.append((url, cec_wake))
+            return True
+        with mock.patch.object(appletv, "_deeplink_get", down), mock.patch.object(appletv, "launch_sequence_async", fake_seq):
+            self.assertTrue(appletv.launch_deeplink("plutotv://live-tv/star-trek-1", cec_wake=True))
+        self.assertEqual(launched, [("plutotv://live-tv/star-trek-1", True)])
+
+    def test_server_error_status_falls_back(self):
+        async def fake_seq(url, **kw):
+            return True
+        with mock.patch.object(appletv, "_deeplink_get", lambda url, timeout: (500, b"server error")), \
+             mock.patch.object(appletv, "launch_sequence_async", fake_seq):
+            self.assertTrue(appletv.launch_deeplink("https://example.com/x.m3u8"))
+
+    def test_no_server_configured_goes_straight_to_pyatv(self):
+        appletv.DEEPLINK_SERVER = None
+
+        async def fake_seq(url, **kw):
+            return url == "youtube://www.youtube.com/watch?v=abc"
+        with mock.patch.object(appletv, "_deeplink_get", side_effect=AssertionError("no server call expected")), \
+             mock.patch.object(appletv, "launch_sequence_async", fake_seq):
+            self.assertTrue(appletv.launch_deeplink("youtube://www.youtube.com/watch?v=abc"))
+
+    def test_empty_target(self):
+        self.assertFalse(appletv.launch_deeplink(" "))
 
 
 class YoutubeDeepLinkTests(unittest.TestCase):
