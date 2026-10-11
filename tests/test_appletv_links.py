@@ -209,11 +209,24 @@ class DeeplinkAppTests(unittest.TestCase):
         self.assertEqual(launched, [("plutotv://live-tv/star-trek-1", True)])
 
     def test_server_error_status_falls_back(self):
+        import urllib.error
+
+        def boom(url, timeout):
+            raise urllib.error.HTTPError(url, 500, "server error", {}, None)
+
         async def fake_seq(url, **kw):
             return True
-        with mock.patch.object(appletv, "_deeplink_get", lambda url, timeout: (500, b"server error")), \
+        with mock.patch.object(appletv, "_deeplink_get", boom), \
              mock.patch.object(appletv, "launch_sequence_async", fake_seq):
             self.assertTrue(appletv.launch_deeplink("https://example.com/x.m3u8"))
+
+    def test_bare_hostname_server_and_pre_encoded_target(self):
+        self.assertEqual(appletv.deeplink_open_url("https://tv.apple.com/us/movie/a%20b/umc.1", server="Game-Room.local"),
+                         "http://Game-Room.local/open?target=https://tv.apple.com/us/movie/a%20b/umc.1")
+
+    def test_bad_ok_delay_on_the_deeplink_path_does_not_raise(self):
+        with mock.patch.object(appletv, "_deeplink_get", lambda url, timeout: (200, b"ok")):
+            self.assertTrue(appletv.launch_deeplink("https://tv.apple.com/us/movie/x", ok_delay="four"))
 
     def test_no_server_configured_goes_straight_to_pyatv(self):
         appletv.DEEPLINK_SERVER = None
