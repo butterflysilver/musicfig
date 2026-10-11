@@ -131,7 +131,11 @@ Notes:
   (one Play/Pause): no relaunch, no sleep/wake, no chooser keys - tvOS resumes a title by itself on relaunch
   and the cold-start keys would pause it again. A different figure does a WARM launch when a TV action ran in the last
   `appletv_warm_minutes` (10): no sleep/wake, no chooser keys, just Play `appletv_url_warm_delay` (4) s after the
-  title opens - so swapping figures is quick. The first tap after a quiet spell does the full cold start. The Pi reconnects to the Apple TV around the sleep/wake and retries a failed launch
+  title opens - so swapping figures is quick (set `appletv_ip`: without it every power check below is a 5 s scan).
+  Both shortcuts first ask the box for its real power state, and a full cold start is done instead when it is not
+  awake or not reachable - normally the case after someone turned the TV off with the remote inside the window
+  (HDMI-CEC puts the Apple TV to sleep with the TV; with CEC off it stays awake and the shortcut is still taken).
+  The first tap after a quiet spell does the full cold start. The Pi reconnects to the Apple TV around the sleep/wake and retries a failed launch
   once on a fresh session (tvOS answers "Open URL failed" on a session that slept); set `appletv_ip` to make
   those reconnects near-instant.
 * `deeplink: <url or scheme>` goes through the **Deeplink** tvOS app (celerityapps, TestFlight) instead: with
@@ -141,7 +145,9 @@ Notes:
   server - whenever another app is in front, so a refused connection is normal: the Pi opens the DeepLink app
   over pyatv (`deeplink_app_id`, default `com.celerity.DeepLink`), waits ~2.5 s and asks again; only if it
   still does not answer is the same target handed to pyatv and the fallback logged (after an Apple TV reboot
-  the server may need a force-quit/reopen of the app on the TV). YouTube links still want the `youtube://` form. A value
+  the server may need a force-quit/reopen of the app on the TV). On a cold start the Pi sleeps/wakes the box over
+  pyatv before asking the server, so HDMI-CEC switches the TV input whichever path opens the target. YouTube links
+  still want the `youtube://` form. A value
   without a scheme (`deeplink: Toy Story`) is the display name of a deep link saved in the app (`/open?name=`),
   so a link validated on the phone first can be reused by name. API: https://celerityapps.com/deeplinks/docs.
   `deeplink_server` can be the Apple TV's `.local` name (`http://Living-Room.local`) or its IP. Purchased Apple

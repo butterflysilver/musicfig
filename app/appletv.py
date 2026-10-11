@@ -7,6 +7,7 @@ Enables launching Disney+, Netflix, and other streaming content via deep links.
 import asyncio
 import re
 import logging
+import time
 import http.client
 import ipaddress
 import urllib.error
@@ -126,8 +127,10 @@ async def connect(name=None, ip=None):
             _atv = None
         else:
             try:
-                # Test if connection is still alive
-                await _atv.power.power_state
+                # Cheap sanity check that the facade is still usable (pyatv
+                # raises once close() has blocked the interface); power_state
+                # is a property, so no await.
+                _atv.power.power_state
                 return _atv
             except Exception:
                 logger.info("Cached Apple TV connection lost, reconnecting...")
@@ -230,7 +233,10 @@ async def is_on(atv_name=None, atv_ip=None):
         return False
 
     try:
-        power_state = await atv.power.power_state
+        # pyatv's power_state is a plain (cached, push-updated) property, not
+        # a coroutine: awaiting it raised TypeError and made every caller
+        # believe the box was off.
+        power_state = atv.power.power_state
         # PowerState.On = device is awake, PowerState.Off = standby
         is_awake = str(power_state) == "PowerState.On"
         logger.info(f"Apple TV power state: {power_state} (on={is_awake})")
@@ -424,9 +430,20 @@ async def launch_sequence_async(url, cec_wake=False, ok_delay=0, atv_name=None, 
     return True
 
 
-def is_on_sync():
-    """Synchronous wrapper for is_on()."""
-    return asyncio.run(is_on())
+def is_on_sync(atv_name=None, atv_ip=None):
+    """Synchronous wrapper for is_on(); False when the box is asleep OR
+    unreachable, and never raises (it runs inside the pad loop)."""
+    return bool(_guarded("Apple TV power check", lambda: is_on(atv_name=atv_name, atv_ip=atv_ip)))
+
+
+async def cec_wake_async(atv_name=None, atv_ip=None):
+    """Sleep/wake the Apple TV on its own (HDMI-CEC turns the TV on and to
+    its input) without launching anything. True when it reported awake."""
+    atv = await connect(name=atv_name, ip=atv_ip)
+    if not atv:
+        return False
+    woke, _ = await _cec_wake(atv, name=atv_name, ip=atv_ip)
+    return woke
 
 
 def turn_on():
@@ -582,8 +599,10 @@ def launch_deeplink(target, atv_name=None, cec_wake=False, ok_delay=0, ok_key="s
     does not always come back after the Apple TV reboots (force-quit and
     reopen the app fixes it), so when it does not answer the same target is
     handed to pyatv's launch_app instead and the fallback is logged in plain
-    words. cec_wake applies to the pyatv path only (the Deeplink path presumes
-    an awake Apple TV: a sleeping one has no web server); the ok_delay key
+    words. cec_wake (a cold start) sleeps/wakes the box over pyatv BEFORE the
+    Deeplink server is asked, so the TV is on and on the right input whoever
+    ends up opening the target (a sleeping box has no web server anyway); the
+    pyatv fallback then launches without a second sleep/wake. The ok_delay key
     press happens on either path, since the TV app waits for Play after the
     page opens no matter who opened it."""
     target = str(target or "").strip()
@@ -592,6 +611,17 @@ def launch_deeplink(target, atv_name=None, cec_wake=False, ok_delay=0, ok_key="s
         return False
     delays = parse_ok_delays(ok_delay, len(parse_ok_keys(ok_key)))
     if DEEPLINK_SERVER:
+        if cec_wake:
+            if _guarded("Apple TV HDMI-CEC wake", lambda: cec_wake_async(atv_name)):
+                logger.info("Apple TV woken for HDMI-CEC before the Deeplink request")
+            else:
+                # The box may have been slept by our own turn_off with no wake
+                # delivered; a server request on a sleeping box times out and
+                # would be read as "opened". Make sure it is awake first.
+                logger.warning("HDMI-CEC wake before the Deeplink request did not complete; sending turn_on")
+                _guarded("Apple TV turn_on", turn_on_async)
+                time.sleep(3)
+            cec_wake = False  # done (or tried twice): the pyatv fallback must not sleep the box again
         url = deeplink_open_url(target)
         for attempt in (1, 2):
             try:
