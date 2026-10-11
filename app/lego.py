@@ -436,12 +436,10 @@ class Base():
         the box reports asleep, and a Play on a sleeping box shows nothing -
         so the box's real power state is checked and a cold launch is done
         when it is not awake (or not reachable)."""
-        if self.appleTvIsWarm(tags):
-            if appletv.is_on_sync():
-                logger.info('Apple TV warm: no sleep/wake, Play only')
-                warm_delay = tags.get('appletv_url_warm_delay', 4)
-                return dict(cec_wake=False, ok_delay=4 if warm_delay is None else warm_delay, ok_key='play_pause')
-            logger.info('Apple TV within the warm window but not awake; doing a cold launch')
+        if self.appleTvWarmAndAwake(tags):
+            logger.info('Apple TV warm: no sleep/wake, Play only')
+            warm_delay = tags.get('appletv_url_warm_delay', 4)
+            return dict(cec_wake=False, ok_delay=4 if warm_delay is None else warm_delay, ok_key='play_pause')
         return dict(cec_wake=bool(tags.get('appletv_cec_wake', False)),
                     ok_delay=tags.get('appletv_url_ok_delay', 0) or 0,
                     ok_key=tags.get('appletv_url_ok_key', 'select') or 'select')
@@ -457,6 +455,30 @@ class Base():
         last = getattr(self, 'appletv_last_launch', 0)
         return bool(last) and time.time() - last < self.appleTvWarmSeconds(tags)
 
+    APPLETV_POWER_MEMO = 5  # seconds one placement may reuse the answer
+
+    def appleTvAwake(self):
+        """The box's real power state, asked at most once per placement: the
+        resume check and the launch-args check happen back to back and each
+        is_on_sync() is its own connect (a 5 s multicast scan on a room
+        without appletv_ip)."""
+        at, awake = getattr(self, 'appletv_power_memo', (0, False))
+        if time.time() - at < self.APPLETV_POWER_MEMO:
+            return awake
+        awake = appletv.is_on_sync()
+        self.appletv_power_memo = (time.time(), awake)
+        return awake
+
+    def appleTvWarmAndAwake(self, tags):
+        """Warm window AND the box reports awake - the only case the
+        sleep/wake (HDMI-CEC input switch) may be skipped."""
+        if not self.appleTvIsWarm(tags):
+            return False
+        if self.appleTvAwake():
+            return True
+        logger.info('Apple TV within the warm window but not awake; doing a cold launch')
+        return False
+
     def appleTvLaunched(self, url):
         """Bookkeeping after a successful launch: this is what is playing,
         nothing is paused any more."""
@@ -464,6 +486,7 @@ class Base():
         self.appletv_url_playing = url
         self.appletv_last_launch = time.time()
         self.appletv_paused_url = None
+        self.appletv_power_memo = (time.time(), True)  # it just took a launch: awake
 
     def resumeAppleTvIfSame(self, url, pad, tags):
         """The same figure put back after a lift-to-pause: one Play/Pause
@@ -479,7 +502,7 @@ class Base():
         if time.time() - getattr(self, 'appletv_paused_at', 0) > self.appleTvWarmSeconds(tags):
             self.appletv_paused_url = None
             return False
-        if not appletv.is_on_sync():
+        if not self.appleTvAwake():
             self.appletv_paused_url = None
             logger.info('Apple TV: same figure replaced but the box is not awake; relaunching')
             return False
@@ -707,7 +730,7 @@ class Base():
                                 ok_delay = 1  # nothing more to press
                             elif appletv.launch_youtube(youtube_url,
                                                         cec_wake=bool(tags.get('appletv_cec_wake', False))
-                                                        and not self.appleTvIsWarm(tags),
+                                                        and not self.appleTvWarmAndAwake(tags),
                                                         ok_delay=ok_delay):
                                 self.appleTvLaunched(youtube_url)
                                 self.base.switch_pad(pad, self.PURPLE)

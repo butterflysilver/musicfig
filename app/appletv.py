@@ -7,6 +7,7 @@ Enables launching Disney+, Netflix, and other streaming content via deep links.
 import asyncio
 import re
 import logging
+import time
 import http.client
 import ipaddress
 import urllib.error
@@ -614,7 +615,12 @@ def launch_deeplink(target, atv_name=None, cec_wake=False, ok_delay=0, ok_key="s
             if _guarded("Apple TV HDMI-CEC wake", lambda: cec_wake_async(atv_name)):
                 logger.info("Apple TV woken for HDMI-CEC before the Deeplink request")
             else:
-                logger.warning("HDMI-CEC wake before the Deeplink request did not complete; continuing")
+                # The box may have been slept by our own turn_off with no wake
+                # delivered; a server request on a sleeping box times out and
+                # would be read as "opened". Make sure it is awake first.
+                logger.warning("HDMI-CEC wake before the Deeplink request did not complete; sending turn_on")
+                _guarded("Apple TV turn_on", turn_on_async)
+                time.sleep(3)
             cec_wake = False  # done (or tried twice): the pyatv fallback must not sleep the box again
         url = deeplink_open_url(target)
         for attempt in (1, 2):

@@ -388,6 +388,22 @@ class DeeplinkAppTests(unittest.TestCase):
             self.assertTrue(appletv.launch_deeplink("https://tv.apple.com/us/movie/x", cec_wake=True))
         self.assertEqual(order, ["cec", "server", ("pyatv", False)])
 
+    def test_failed_pre_wake_still_sends_turn_on_before_the_server(self):
+        """Our own turn_off may have slept the box; a server request on a
+        sleeping box times out and would be read as "opened"."""
+        order = []
+
+        async def no_wake(atv_name=None, atv_ip=None):
+            order.append("cec-failed")
+            return False
+
+        async def turn_on(atv_name=None, atv_ip=None):
+            order.append("turn_on")
+            return True
+        with mock.patch.object(appletv, "cec_wake_async", no_wake),              mock.patch.object(appletv, "turn_on_async", turn_on),              mock.patch.object(appletv.time, "sleep", lambda s: order.append(("sleep", s))),              mock.patch.object(appletv, "_deeplink_get", lambda url, timeout: (order.append("server"), (200, b"ok"))[1]):
+            self.assertTrue(appletv.launch_deeplink("https://tv.apple.com/us/movie/x", cec_wake=True))
+        self.assertEqual(order, ["cec-failed", "turn_on", ("sleep", 3), "server"])
+
     def test_warm_deeplink_does_not_touch_power(self):
         async def no_cec(*a, **kw):
             raise AssertionError("sleep/wake on a warm launch")
