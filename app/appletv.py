@@ -443,7 +443,10 @@ def deeplink_open_url(target, server=None):
     base = (server or DEEPLINK_SERVER or "").rstrip("/")
     target = str(target).strip()
     key = "target" if "://" in target else "name"
-    return f"{base}/open?{key}={urllib.parse.quote(target, safe='')}"
+    # The app's server takes the URL raw (its docs and the author's working
+    # Apple TV app example: target=https://tv.apple.com/us/movie/...), so keep
+    # scheme and path as-is and only escape what would split our own query.
+    return f"{base}/open?{key}={urllib.parse.quote(target, safe=':/@-._~')}"
 
 
 def _deeplink_get(url, timeout):

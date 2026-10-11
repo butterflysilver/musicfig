@@ -132,7 +132,9 @@ Notes:
   (it does not always come back after the Apple TV reboots - force-quit and reopen the app on the TV) the same
   target is handed to pyatv and the fallback is logged. YouTube links still want the `youtube://` form. A value
   without a scheme (`deeplink: Toy Story`) is the display name of a deep link saved in the app (`/open?name=`),
-  so a link validated on the phone first can be reused by name. API: https://celerityapps.com/deeplinks/docs
+  so a link validated on the phone first can be reused by name. API: https://celerityapps.com/deeplinks/docs.
+  `deeplink_server` can be the Apple TV's `.local` name (`http://Living-Room.local`) or its IP. Purchased Apple
+  TV app movies: share the title in the TV app and use the full `https://tv.apple.com/us/movie/...` link.
 * A room with no entry in `room_homepods` makes `"@room"` resolve to nothing, so the tag falls back to its
   other actions rather than playing on the wrong speaker.
 

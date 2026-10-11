@@ -166,16 +166,22 @@ class DeeplinkAppTests(unittest.TestCase):
     def tearDown(self):
         appletv.DEEPLINK_SERVER = self._server
 
-    def test_open_url_is_encoded(self):
+    def test_apple_tv_app_movie_link_is_sent_in_the_authors_working_form(self):
+        # Jennifer's 2024 exchange with the app's author: the full https link works, raw.
+        link = "https://tv.apple.com/us/movie/a-charlie-brown-thanksgiving/umc.cmc.7grdgbjdq3tiy37f4dc3yeyms"
+        self.assertEqual(appletv.deeplink_open_url(link, server="http://Living-Room.local"),
+                         "http://Living-Room.local/open?target=" + link)
+
+    def test_query_characters_inside_the_target_are_escaped(self):
         self.assertEqual(appletv.deeplink_open_url("plutotv://live-tv/star-trek-1?x=1&y=2"),
-                         "http://192.168.1.50/open?target=plutotv%3A%2F%2Flive-tv%2Fstar-trek-1%3Fx%3D1%26y%3D2")
+                         "http://192.168.1.50/open?target=plutotv://live-tv/star-trek-1%3Fx%3D1%26y%3D2")
 
     def test_server_ok_means_no_pyatv(self):
         seen = []
         with mock.patch.object(appletv, "_deeplink_get", lambda url, timeout: (seen.append(url), (200, b"ok"))[1]), \
              mock.patch.object(appletv, "launch_sequence_async", side_effect=AssertionError("pyatv used")):
             self.assertTrue(appletv.launch_deeplink("https://tv.apple.com/us/movie/x"))
-        self.assertEqual(seen, ["http://192.168.1.50/open?target=https%3A%2F%2Ftv.apple.com%2Fus%2Fmovie%2Fx"])
+        self.assertEqual(seen, ["http://192.168.1.50/open?target=https://tv.apple.com/us/movie/x"])
 
     def test_server_ok_then_play_pause_press_over_pyatv(self):
         fake = FakeAtv()
