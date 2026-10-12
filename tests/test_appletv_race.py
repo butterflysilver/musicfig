@@ -196,15 +196,32 @@ class ConcurrentActionsTests(unittest.TestCase):
                 t = threading.Thread(target=lambda: results.append(appletv.launch_url("https://tv.apple.com/us/movie/x")),
                                      name="pad", daemon=True)
                 t.start()
-                t.join(0.3)
+                # a loaded Pi can take a while to start the thread: poll for the
+                # log line instead of trusting a fixed wait
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not any("busy with another action" in r.getMessage() for r in cm.records):
+                    time.sleep(0.02)
                 self.assertTrue(t.is_alive())  # waiting on the lock, not skipped
                 self.assertEqual(results, [])
-            self.assertTrue(any("busy with another action" in m for m in cm.output))
+            self.assertTrue(any("busy with another action; pad waits" in m for m in cm.output))
         finally:
             appletv._action_lock.release()
         t.join(15)
         self.assertFalse(t.is_alive())
         self.assertEqual(results, [True])
+
+    def test_launch_gives_up_after_the_wait_limit(self):
+        """A pause that never returns (TCP connect with no pyatv timeout) must
+        not hold the pad loop forever: the launch fails loudly instead."""
+        appletv._action_lock.acquire()
+        try:
+            with unittest.mock.patch.object(appletv, "ACTION_WAIT_S", 0.2), \
+                    self.assertLogs(appletv.logger, level="ERROR") as cm:
+                self.assertFalse(appletv.launch_url("https://tv.apple.com/us/movie/x"))
+            self.assertTrue(any("still busy after 0.2s" in m for m in cm.output))
+        finally:
+            appletv._action_lock.release()
+        self.assertFalse(appletv._action_lock.locked())
 
 
 if __name__ == "__main__":

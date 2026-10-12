@@ -66,6 +66,7 @@ socket_timeout = __import__("socket").timeout
 DEEPLINK_APP_ID = "com.celerity.DeepLink"
 DEEPLINK_FOREGROUND_WAIT = 2.5
 FIRST_WAKE_WINDOW = 8  # seconds to give the first turn_on before resending it
+ACTION_WAIT_S = 120  # longest a launch waits for a pause still on the wire (Linux SYN retries ~127 s)
 
 
 def _is_ip(value) -> bool:
@@ -83,8 +84,14 @@ def _run_action(coro_factory):
     (see _action_lock). Every sync entry point that touches the connection
     cache goes through here; the lock is released however the action ends."""
     if not _action_lock.acquire(blocking=False):
-        logger.info("Apple TV busy with another action; waiting for it to finish")
-        _action_lock.acquire()
+        logger.info("Apple TV busy with another action; %s waits for it to finish",
+                    threading.current_thread().name)
+        # Bounded: a pause stuck in a TCP connect with no pyatv timeout must
+        # not hold a launch forever, and a future same-thread re-entrant call
+        # fails loudly here instead of hanging the pad loop.
+        if not _action_lock.acquire(timeout=ACTION_WAIT_S):
+            logger.error("Apple TV still busy after %ss; giving up on this action", ACTION_WAIT_S)
+            return False
     try:
         return asyncio.run(coro_factory())
     finally:
