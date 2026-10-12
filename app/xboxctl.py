@@ -35,6 +35,37 @@ def load_config(tags: dict) -> None:
     logger.info("Xbox config loaded")
 
 
+async def _send(client, device_id: str, command_type: str, command: str, params=None) -> bool:
+    """POST one SmartGlass command and judge it by Xbox Live's own verdict.
+    xbox-webapi 2.1 parses the reply into a model the service has outgrown
+    (a pydantic error) and, when it does parse, never looks at status.errorCode,
+    so a wake Live could not deliver (ErrorCallingWNS: the console is shut down,
+    offline, or not in Sleep) looked like success. The body mirrors the library's
+    _send_one_shot_command; only status.errorCode == OK counts as delivered."""
+    sg = client.smartglass
+    body = {
+        'destination': 'Xbox',
+        'type': command_type,
+        'command': command,
+        'sessionId': sg._smartglass_session_id,
+        'sourceId': 'com.microsoft.smartglass',
+        'parameters': params or [{}],
+        'linkedXboxId': device_id,
+    }
+    resp = await client.session.post(f'{sg.SG_URL}/commands', json=body, headers=sg.HEADERS_SG)
+    resp.raise_for_status()
+    try:
+        status = (resp.json() or {}).get('status') or {}
+    except ValueError:
+        status = {}
+    code = status.get('errorCode')
+    if code != 'OK':
+        logger.error("Xbox %s/%s not delivered to %s: %s %s", command_type, command, device_id,
+                     code or 'no status in reply', status.get('errorMessage') or '')
+        return False
+    return True
+
+
 def _target(console_id: Optional[str]) -> Optional[str]:
     """The console an action should hit: the explicit argument, else the pad's
     configured xbox_console_id, else None (= whatever the account lists)."""
@@ -62,8 +93,13 @@ async def _get_authenticated_client():
         logger.error("Xbox tokens not found. Run xbox_auth_debug.py first.")
         return None
 
-    with open(TOKEN_FILE, 'r') as f:
-        tokens = json.load(f)
+    try:
+        with open(TOKEN_FILE, 'r') as f:
+            tokens = json.load(f)
+        tokens['access_token'], tokens['refresh_token']
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        logger.error("Xbox token file %s is unreadable or incomplete (%s); sign in again", TOKEN_FILE, e.__class__.__name__)
+        return None
 
     client_id = tokens.get('client_id', _config.get('client_id', ''))
     client_secret = _config.get('client_secret', '')
@@ -95,7 +131,11 @@ async def _get_authenticated_client():
     )
 
     try:
-        # Refresh and get Xbox Live tokens
+        # The file holds no issue time, so the loaded access token looks
+        # freshly minted to the library and refresh_tokens() would keep
+        # it; an hour after sign-in Xbox Live then answers 401. Always
+        # trade the refresh token for a new access token first.
+        auth_mgr.oauth = await auth_mgr.refresh_oauth_token()
         await auth_mgr.refresh_tokens()
 
         # Save updated tokens
@@ -140,7 +180,7 @@ async def get_consoles():
 
 
 async def power_on(console_id: str = None) -> bool:
-    """Power on an Xbox console."""
+    """Wake the pad's console (or, with none configured, every console on the account)."""
     client = await _get_authenticated_client()
     if not client:
         return False
@@ -148,15 +188,16 @@ async def power_on(console_id: str = None) -> bool:
     try:
         console_id = _target(console_id)
         if console_id:
-            await client.smartglass.wake_up(console_id)
+            targets = [console_id]
         else:
-            # No console configured or named: wake every console on the account
             logger.warning("xbox_console_id not set in tags.yml; waking every console on the account")
-            consoles = await get_consoles()
-            for console in consoles:
-                await client.smartglass.wake_up(console.id)
-        logger.info("Xbox power on command sent")
-        return True
+            targets = [c.id for c in await get_consoles()]
+        ok = False
+        for target in targets:
+            ok = await _send(client, target, 'Power', 'WakeUp') or ok
+        if ok:
+            logger.info("Xbox power on command delivered")
+        return ok
     except Exception as e:
         logger.error(f"Failed to power on Xbox: {e}")
         return False
@@ -173,10 +214,10 @@ async def power_off(console_id: str = None) -> bool:
         if not target_id:
             consoles = await get_consoles()
             target_id = consoles[0].id if consoles else None
-
-        if target_id:
-            await client.smartglass.turn_off(target_id)
-            logger.info("Xbox power off command sent")
+        if not target_id:
+            return False
+        if await _send(client, target_id, 'Power', 'TurnOff'):
+            logger.info("Xbox power off command delivered")
             return True
         return False
     except Exception as e:
@@ -185,7 +226,7 @@ async def power_off(console_id: str = None) -> bool:
 
 
 async def launch_app(app_id: str, console_id: str = None) -> bool:
-    """Launch an app/game on Xbox."""
+    """Launch an app/game (Microsoft Store product id) on Xbox."""
     client = await _get_authenticated_client()
     if not client:
         return False
@@ -195,10 +236,10 @@ async def launch_app(app_id: str, console_id: str = None) -> bool:
         if not target_id:
             consoles = await get_consoles()
             target_id = consoles[0].id if consoles else None
-
-        if target_id:
-            # Launch the app
-            await client.smartglass.launch_app(target_id, app_id)
+        if not target_id:
+            return False
+        if await _send(client, target_id, 'Shell', 'ActivateApplicationWithOneStoreProductId',
+                       [{'oneStoreProductId': app_id}]):
             logger.info(f"Launched app {app_id} on Xbox")
             return True
         return False
@@ -223,44 +264,46 @@ async def get_console_status(console_id: str = None) -> Optional[dict]:
 
 # Sync wrappers for use from non-async code
 
-def sync_get_consoles():
-    """Synchronous wrapper for get_consoles."""
+def _run(coro):
+    """Run one action on its own event loop and forget the cached client
+    afterwards: the httpx client and XboxLiveClient are bound to the loop
+    they were created on, and that loop is closed here - reusing them from
+    the next action raised 'Event loop is closed' (the red/blue flash). The
+    tokens stay in TOKEN_FILE, so the next action only pays the refresh."""
+    global _xbl_client, _http_client
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(get_consoles())
+        return loop.run_until_complete(coro)
     finally:
+        if _http_client is not None:
+            try:
+                loop.run_until_complete(_http_client.aclose())
+            except Exception:
+                pass
+        _xbl_client = None
+        _http_client = None
         loop.close()
+
+
+def sync_get_consoles():
+    """Synchronous wrapper for get_consoles."""
+    return _run(get_consoles())
 
 
 def sync_power_on(console_id: str = None) -> bool:
     """Synchronous wrapper for power_on."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(power_on(console_id))
-    finally:
-        loop.close()
+    return _run(power_on(console_id))
 
 
 def sync_power_off(console_id: str = None) -> bool:
     """Synchronous wrapper for power_off."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(power_off(console_id))
-    finally:
-        loop.close()
+    return _run(power_off(console_id))
 
 
 def sync_launch_app(app_id: str, console_id: str = None) -> bool:
     """Synchronous wrapper for launch_app."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(launch_app(app_id, console_id))
-    finally:
-        loop.close()
+    return _run(launch_app(app_id, console_id))
 
 
 # Test function
