@@ -91,3 +91,96 @@ class XboxTargetTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class XboxRobustnessTests(unittest.TestCase):
+    """The three failures the first live card tap hit (2026-10-12): a stale
+    access token, a cached client on a closed loop, and xbox-webapi choking
+    on Xbox Live's newer reply after the command was already accepted."""
+
+    def setUp(self):
+        xb._config = {}
+        xb._xbl_client = xb._http_client = None
+
+    def test_reply_validation_error_counts_as_sent_but_nothing_else_does(self):
+        from pydantic import BaseModel, ValidationError
+
+        class CommandResponse(BaseModel):
+            result: str
+
+        class Other(BaseModel):
+            result: str
+
+        try:
+            CommandResponse(result=None)
+        except ValidationError as e:
+            reply_error = e
+        try:
+            Other(result=None)
+        except ValidationError as e:
+            other_error = e
+        self.assertTrue(xb._command_was_sent(reply_error))
+        self.assertFalse(xb._command_was_sent(other_error))
+        self.assertFalse(xb._command_was_sent(RuntimeError('Event loop is closed')))
+
+    def test_power_on_reports_success_when_only_the_reply_was_unparseable(self):
+        from pydantic import BaseModel, ValidationError
+
+        class CommandResponse(BaseModel):
+            result: str
+
+        async def wake_up(cid):
+            CommandResponse(result=None)
+        client = mock.Mock(smartglass=mock.Mock(wake_up=wake_up))
+
+        async def fake_client():
+            return client
+        with mock.patch.object(xb, '_get_authenticated_client', fake_client):
+            xb.load_config({'xbox_console_id': 'AAAA'})
+            self.assertTrue(asyncio.run(xb.power_on()))
+
+    def test_run_forgets_the_cached_client_and_closes_it(self):
+        closed = []
+
+        class FakeHttp:
+            async def aclose(self):
+                closed.append(True)
+
+        async def action():
+            xb._http_client = FakeHttp()
+            xb._xbl_client = object()
+            return 'done'
+        self.assertEqual(xb._run(action()), 'done')
+        self.assertEqual(closed, [True])
+        self.assertIsNone(xb._http_client)
+        self.assertIsNone(xb._xbl_client)
+
+    def test_authenticated_client_refreshes_the_oauth_token_before_use(self):
+        import json, tempfile, os
+        tmp = tempfile.mkdtemp()
+        token_file = os.path.join(tmp, 'xbox_tokens.json')
+        json.dump({'access_token': 'old', 'refresh_token': 'r', 'client_id': 'c', 'user_id': 'u'}, open(token_file, 'w'))
+        calls = []
+
+        class FakeMgr:
+            def __init__(self, *a, **k):
+                self.oauth = None
+
+            async def refresh_oauth_token(self):
+                calls.append('refresh_oauth')
+                return mock.Mock(access_token='new', refresh_token='r2', token_type='bearer', expires_in=3600, scope='s', user_id='u')
+
+            async def refresh_tokens(self):
+                calls.append(('refresh_tokens', self.oauth.access_token))
+
+        fake_mod = mock.Mock(AuthenticationManager=FakeMgr)
+        import sys
+        with mock.patch.object(xb, 'TOKEN_FILE', token_file), \
+                mock.patch.dict(sys.modules, {'xbox.webapi.authentication.manager': fake_mod,
+                                              'xbox.webapi.api.client': mock.Mock(XboxLiveClient=lambda mgr: 'client'),
+                                              'xbox.webapi.authentication.models': mock.Mock(OAuth2TokenResponse=lambda **k: mock.Mock(**k))}):
+            xb.load_config({'xbox_client_id': 'c', 'xbox_client_secret': 's'})
+            self.assertEqual(asyncio.run(xb._get_authenticated_client()), 'client')
+        self.assertEqual(calls, ['refresh_oauth', ('refresh_tokens', 'new')])
+        self.assertEqual(json.load(open(token_file))['access_token'], 'new')
+        xb._xbl_client = xb._http_client = None

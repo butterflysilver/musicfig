@@ -35,6 +35,20 @@ def load_config(tags: dict) -> None:
     logger.info("Xbox config loaded")
 
 
+def _command_was_sent(e: Exception) -> bool:
+    """xbox-webapi 2.1 parses Xbox Live's reply into a CommandResponse model
+    that the service has since outgrown; the HTTP call was already answered
+    200 by then, so a pydantic ValidationError means 'sent, reply not
+    understood' - not a failure. Anything else is a real one."""
+    try:
+        from pydantic import ValidationError
+    except ImportError:  # pragma: no cover
+        return False
+    # Only the REPLY model counts; a validation error while building a request
+    # would mean nothing was sent.
+    return isinstance(e, ValidationError) and getattr(e, 'title', '') == 'CommandResponse'
+
+
 def _target(console_id: Optional[str]) -> Optional[str]:
     """The console an action should hit: the explicit argument, else the pad's
     configured xbox_console_id, else None (= whatever the account lists)."""
@@ -95,7 +109,11 @@ async def _get_authenticated_client():
     )
 
     try:
-        # Refresh and get Xbox Live tokens
+        # The file holds no issue time, so the loaded access token looks
+        # freshly minted to the library and refresh_tokens() would keep
+        # it; an hour after sign-in Xbox Live then answers 401. Always
+        # trade the refresh token for a new access token first.
+        auth_mgr.oauth = await auth_mgr.refresh_oauth_token()
         await auth_mgr.refresh_tokens()
 
         # Save updated tokens
@@ -158,6 +176,9 @@ async def power_on(console_id: str = None) -> bool:
         logger.info("Xbox power on command sent")
         return True
     except Exception as e:
+        if _command_was_sent(e):
+            logger.info("Xbox power on command sent (reply not understood by xbox-webapi; ignoring)")
+            return True
         logger.error(f"Failed to power on Xbox: {e}")
         return False
 
@@ -180,6 +201,9 @@ async def power_off(console_id: str = None) -> bool:
             return True
         return False
     except Exception as e:
+        if _command_was_sent(e):
+            logger.info("Xbox power off command sent (reply not understood by xbox-webapi; ignoring)")
+            return True
         logger.error(f"Failed to power off Xbox: {e}")
         return False
 
@@ -203,6 +227,9 @@ async def launch_app(app_id: str, console_id: str = None) -> bool:
             return True
         return False
     except Exception as e:
+        if _command_was_sent(e):
+            logger.info("Xbox launch command sent (reply not understood by xbox-webapi; ignoring)")
+            return True
         logger.error(f"Failed to launch app: {e}")
         return False
 
@@ -223,44 +250,46 @@ async def get_console_status(console_id: str = None) -> Optional[dict]:
 
 # Sync wrappers for use from non-async code
 
-def sync_get_consoles():
-    """Synchronous wrapper for get_consoles."""
+def _run(coro):
+    """Run one action on its own event loop and forget the cached client
+    afterwards: the httpx client and XboxLiveClient are bound to the loop
+    they were created on, and that loop is closed here - reusing them from
+    the next action raised 'Event loop is closed' (the red/blue flash). The
+    tokens stay in TOKEN_FILE, so the next action only pays the refresh."""
+    global _xbl_client, _http_client
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(get_consoles())
+        return loop.run_until_complete(coro)
     finally:
+        if _http_client is not None:
+            try:
+                loop.run_until_complete(_http_client.aclose())
+            except Exception:
+                pass
+        _xbl_client = None
+        _http_client = None
         loop.close()
+
+
+def sync_get_consoles():
+    """Synchronous wrapper for get_consoles."""
+    return _run(get_consoles())
 
 
 def sync_power_on(console_id: str = None) -> bool:
     """Synchronous wrapper for power_on."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(power_on(console_id))
-    finally:
-        loop.close()
+    return _run(power_on(console_id))
 
 
 def sync_power_off(console_id: str = None) -> bool:
     """Synchronous wrapper for power_off."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(power_off(console_id))
-    finally:
-        loop.close()
+    return _run(power_off(console_id))
 
 
 def sync_launch_app(app_id: str, console_id: str = None) -> bool:
     """Synchronous wrapper for launch_app."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(launch_app(app_id, console_id))
-    finally:
-        loop.close()
+    return _run(launch_app(app_id, console_id))
 
 
 # Test function
