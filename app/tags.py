@@ -55,7 +55,8 @@ def resolve_for_room(tags, room):
           game-room: Basement (2)
 
     A room with no HomePod (or no entry) makes "@room" resolve to nothing, so
-    the airplay action is dropped rather than sent to the wrong speaker.
+    the airplay and yoto_airplay actions are dropped (the figure does nothing
+    there) rather than sent to the wrong speaker or red-flashed for want of one.
 
     The same for a real Yoto player (`yoto: <card id>` plays the card on the
     Yoto itself through the Yoto MCP):
@@ -88,6 +89,7 @@ def resolve_for_room(tags, room):
             else:
                 merged.pop('homepod', None)
                 merged.pop('airplay', None)
+                merged.pop('yoto_airplay', None)
         if merged.get('yoto_player') == '@room':
             merged['yoto_player'] = room_yoto_players.get(room) or '@online'
         resolved[ident] = merged
