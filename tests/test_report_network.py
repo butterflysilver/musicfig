@@ -152,19 +152,25 @@ class LanTests(unittest.TestCase):
 
     def test_sweep_pings_every_host_of_the_one_slash_24(self):
         calls = []
-        with mock.patch.object(rn, '_run', side_effect=lambda cmd, timeout=5: calls.append(cmd) or ''):
+        with mock.patch.object(rn, '_run', side_effect=lambda cmd, timeout=5, **_kw: calls.append(cmd) or ''):
             rn.ping_sweep('192.168.0')
         targets = sorted(c[-1] for c in calls)
         self.assertEqual(len(calls), 254)
         self.assertEqual(targets, sorted(f'192.168.0.{n}' for n in range(1, 255)))
         self.assertTrue(all(c[:3] == ['ping', '-c1', '-W1'] for c in calls))
+        # a sweep's misses are expected: they must not bury the real reasons in a dry run
+        with mock.patch.object(rn.subprocess, 'run', side_effect=FileNotFoundError('no ping')), \
+                self.assertLogs('report_network', level='DEBUG') as logs:
+            rn.ping_sweep('192.168.0')
+            rn.logger.debug('sentinel')
+        self.assertEqual(logs.output, ['DEBUG:report_network:sentinel'])
         self.assertIsNone(rn.subnet_base('not an ip'))
         self.assertEqual(rn.subnet_base('10.1.2.3'), '10.1.2')
 
     def test_collect_lan_drops_self_sorts_by_ip_and_caps(self):
         with mock.patch.object(rn, '_run', side_effect=fake_run({'neigh': NEIGH})), \
                 mock.patch.object(rn.shutil, 'which', return_value=None):
-            lan = rn.collect_lan('192.168.0.104', 'd8:3a:dd:aa:bb:cc', sweep=False)
+            lan = rn.collect_lan('192.168.0.104', {'192.168.0.104'}, {'d8:3a:dd:aa:bb:cc'}, sweep=False)
         self.assertEqual([d['ip'] for d in lan], ['192.168.0.1', '192.168.0.3', '192.168.0.7', '192.168.0.23', '192.168.0.24'])
         self.assertTrue(all('name' not in d for d in lan))
         # a /24 can never hold more than 254 rows; the cap is belt and braces
@@ -173,10 +179,10 @@ class LanTests(unittest.TestCase):
                        for n in range(0, 700))
         with mock.patch.object(rn, '_run', side_effect=fake_run({'neigh': many})), \
                 mock.patch.object(rn.shutil, 'which', return_value=None):
-            self.assertEqual(len(rn.collect_lan('10.0.0.200', None, sweep=False)), rn.MAX_LAN)
+            self.assertEqual(len(rn.collect_lan('10.0.0.200', sweep=False)), rn.MAX_LAN)
         # no address of our own = no /24 to report, whatever the table holds
         with mock.patch.object(rn, '_run', side_effect=fake_run({'neigh': NEIGH})):
-            self.assertEqual(rn.collect_lan(None, None, sweep=False), [])
+            self.assertEqual(rn.collect_lan(None, sweep=False), [])
 
     def test_collect_lan_keeps_only_the_pads_slash_24_and_one_row_per_device(self):
         """A dual-homed Pi with docker: 172.17.0.x containers and 10.x rows
@@ -194,12 +200,18 @@ class LanTests(unittest.TestCase):
         )
         with mock.patch.object(rn, '_run', side_effect=fake_run({'neigh': neigh})), \
                 mock.patch.object(rn.shutil, 'which', return_value=None):
-            lan = rn.collect_lan('192.168.0.147', 'd8:3a:dd:00:01:47', sweep=False)
+            lan = rn.collect_lan('192.168.0.147', {'192.168.0.147', '192.168.0.146', '172.17.0.1'},
+                                 {'d8:3a:dd:00:01:47', 'd8:3a:dd:00:01:46', '02:42:11:22:33:44'}, sweep=False)
+        # neither of the Pi's own addresses is a device, whichever NIC saw it
         self.assertEqual(lan, [
             {'ip': '192.168.0.1', 'mac': 'f0:70:84:2c:cb:60', 'state': 'REACHABLE'},
             {'ip': '192.168.0.7', 'mac': 'aa:bb:cc:dd:ee:07', 'state': 'STALE'},
-            {'ip': '192.168.0.146', 'mac': 'd8:3a:dd:00:01:46', 'state': 'REACHABLE'},
         ])
+        # and a MAC alone is enough to know it is us (DHCP handed the NIC a new address)
+        with mock.patch.object(rn, '_run', side_effect=fake_run({'neigh': neigh})), \
+                mock.patch.object(rn.shutil, 'which', return_value=None):
+            lan = rn.collect_lan('192.168.0.147', (), {'d8:3a:dd:00:01:46'}, sweep=False)
+        self.assertEqual([d['ip'] for d in lan], ['192.168.0.1', '192.168.0.7'])
 
     def test_names_come_from_one_batched_avahi_call_capped_as_a_whole(self):
         """One avahi-resolve-address for every ip, bounded by RESOLVE_CAP_S
@@ -211,7 +223,7 @@ class LanTests(unittest.TestCase):
             rn.resolve_names(devices)
         self.assertEqual(run.call_count, 1)
         self.assertEqual(run.call_args.args[0], ['avahi-resolve-address', '-4'] + [d['ip'] for d in devices])
-        self.assertEqual(run.call_args.kwargs, {'timeout': rn.RESOLVE_CAP_S, 'keep_partial': True})
+        self.assertEqual(run.call_args.kwargs, {'timeout': rn.RESOLVE_CAP_S + rn.RESOLVE_GRACE_S, 'keep_partial': True})
         self.assertEqual([d.get('name') for d in devices],
                          ['gfiber.local', None, 'kitchen.local', None, None, None])
         # nothing came back (timed out before any line, or avahi absent) = nameless, not failed
@@ -223,11 +235,11 @@ class LanTests(unittest.TestCase):
     def test_avahi_is_skipped_when_the_binary_is_absent(self):
         with mock.patch.object(rn, '_run', side_effect=fake_run({'neigh': NEIGH})) as run, \
                 mock.patch.object(rn.shutil, 'which', return_value=None):
-            rn.collect_lan('192.168.0.104', None, sweep=False)
+            rn.collect_lan('192.168.0.104', sweep=False)
         self.assertNotIn('avahi-resolve-address', [c.args[0][0] for c in run.call_args_list])
         with mock.patch.object(rn, '_run', side_effect=fake_run({'neigh': NEIGH, 'avahi-resolve-address': '192.168.0.7\tkitchen.local\n'})), \
                 mock.patch.object(rn.shutil, 'which', return_value='/usr/bin/avahi-resolve-address'):
-            lan = rn.collect_lan('192.168.0.104', None, sweep=False)
+            lan = rn.collect_lan('192.168.0.104', sweep=False)
         self.assertEqual([d.get('name') for d in lan], [None, None, 'kitchen.local', None, None])
 
 
@@ -261,6 +273,26 @@ class RunTests(unittest.TestCase):
                          '1.2.3.4\thit.local')
         self.assertEqual(rn._run([sys.executable, '-c', hits_then_fail]), '')
 
+    def test_partial_output_of_a_timeout_is_bytes_on_posix_and_still_decoded(self):
+        """subprocess.run raises TimeoutExpired with .stdout as bytes on
+        POSIX even with text=True (Windows hands back str); both decode."""
+        err = rn.subprocess.TimeoutExpired(['x'], 1, output=b'1.2.3.4\thit.local\n\xff')
+        with mock.patch.object(rn.subprocess, 'run', side_effect=err):
+            self.assertEqual(rn._run(['x'], timeout=1, keep_partial=True), '1.2.3.4\thit.local\n�')
+            self.assertEqual(rn._run(['x'], timeout=1), '')
+        err = rn.subprocess.TimeoutExpired(['x'], 1, output='str\n')
+        with mock.patch.object(rn.subprocess, 'run', side_effect=err):
+            self.assertEqual(rn._run(['x'], timeout=1, keep_partial=True), 'str\n')
+        self.assertEqual(rn._text(None), '')
+
+    def test_quiet_hides_the_reason(self):
+        with self.assertLogs('report_network', level='DEBUG') as logs:
+            rn._run(['definitely-not-a-binary-on-this-box-xyz'], quiet=True)
+            rn._run([sys.executable, '-c', 'raise SystemExit(1)'], quiet=True)
+            rn._run([sys.executable, '-c', 'import time; time.sleep(10)'], timeout=0.3, quiet=True)
+            rn.logger.debug('sentinel')
+        self.assertEqual(len(logs.output), 1)
+
 
 class PayloadTests(unittest.TestCase):
     def test_shape_with_every_tool_present(self):
@@ -268,8 +300,9 @@ class PayloadTests(unittest.TestCase):
                 mock.patch.object(rn, 'read_uptime_s', return_value=4242), \
                 mock.patch.object(rn, 'NETWATCH_FAILURES_FILE', '/nonexistent/failures'), \
                 mock.patch.object(rn.shutil, 'which', return_value=None):
-            self_info = rn.collect_self()
-            lan = rn.collect_lan(self_info['ip'], self_info['mac'], sweep=False)
+            self_info, ips, macs = rn.collect_self()
+            lan = rn.collect_lan(self_info['ip'], ips, macs, sweep=False)
+        self.assertEqual((ips, macs), ({'127.0.0.1', '192.168.0.104'}, {'d8:3a:dd:11:22:33', 'd8:3a:dd:aa:bb:cc'}))
         p = rn.build_payload('kitchen', 'kitchen', self_info, lan, now=NOW)
         self.assertEqual(p['reported_at'], '2026-10-12T15:00:00+00:00')
         self.assertEqual(p['self'], {
@@ -286,8 +319,9 @@ class PayloadTests(unittest.TestCase):
         with mock.patch.object(rn, '_run', return_value=''), \
                 mock.patch.object(rn, 'read_uptime_s', return_value=None), \
                 mock.patch.object(rn, 'NETWATCH_FAILURES_FILE', '/nonexistent/failures'):
-            self_info = rn.collect_self()
-            lan = rn.collect_lan(self_info['ip'], self_info['mac'])
+            self_info, ips, macs = rn.collect_self()
+            lan = rn.collect_lan(self_info['ip'], ips, macs)
+        self.assertEqual((ips, macs), (set(), set()))
         self.assertEqual(self_info, {'ip': None, 'mac': None, 'uptime_s': None, 'link': None,
                                      'netwatch': {'failures_now': 0, 'blips_this_boot': 0, 'last_line': None}})
         self.assertEqual(lan, [])
@@ -421,13 +455,13 @@ class MainTests(unittest.TestCase):
     def test_no_sweep_skips_the_pings_but_still_reads_neighbours(self):
         with mock.patch.object(rn, '_run', side_effect=fake_run(ALL_TOOLS)) as run, \
                 mock.patch.object(rn.shutil, 'which', return_value=None):
-            lan = rn.collect_lan('192.168.0.104', None, sweep=False)
+            lan = rn.collect_lan('192.168.0.104', sweep=False)
         self.assertNotIn('ping', [c.args[0][0] for c in run.call_args_list])
         self.assertEqual(len(lan), 5)
         # and with the sweep on, the same address is pinged across its /24
         with mock.patch.object(rn, '_run', side_effect=fake_run(ALL_TOOLS)) as run, \
                 mock.patch.object(rn.shutil, 'which', return_value=None):
-            rn.collect_lan('192.168.0.104', None, sweep=True)
+            rn.collect_lan('192.168.0.104', sweep=True)
         pinged = [c.args[0][-1] for c in run.call_args_list if c.args[0][0] == 'ping']
         self.assertEqual(len(pinged), 254)
         self.assertTrue(all(ip.startswith('192.168.0.') for ip in pinged))

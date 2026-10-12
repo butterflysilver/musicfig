@@ -147,11 +147,13 @@ runs `musicfig-network.service` as the unprivileged `musicfig` user (plus the
   /24 with a MAC in state REACHABLE / STALE / DELAY / PROBE - other subnets
   (docker bridges, VPNs) are ignored and a device learned on two interfaces
   is one row with its best state - plus an mDNS `name` from one batched
-  `avahi-resolve-address` call where it is installed, bounded at 5 s in
-  total (the names that arrived in time are kept, the rest stay nameless;
-  names are cut to 63 characters). The pad itself is left out of `lan`; the
-  list is capped at 512 rows. Nothing else - no hostnames the pad did not
-  see itself.
+  `avahi-resolve-address` call where it is installed: avahi gives up on the
+  misses after its own ~5 s and exits non-zero, and the hits it printed are
+  kept; a hard cap 2 s past that kills it, losing whatever it had not
+  flushed. Names are cut to 63 characters. Every address and MAC of the pad
+  itself is left out of `lan` (a dual-homed Pi sees its own Ethernet port
+  from Wi-Fi); the list is capped at 512 rows. Nothing else - no hostnames
+  the pad did not see itself.
 * A missing tool (`nmcli`, `ip`, `avahi-resolve-address`, `journalctl`) or a
   timeout never fails the report: that piece is null / empty, and
   `--dry-run` logs why.

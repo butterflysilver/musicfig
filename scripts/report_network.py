@@ -84,33 +84,47 @@ NEIGH_STATES = ('REACHABLE', 'DELAY', 'PROBE', 'STALE')
 SWEEP_WORKERS = 64
 SWEEP_CAP_S = 6
 RESOLVE_CAP_S = 5
+# avahi gives its own resolvers RESOLVE_CAP_S before it reports the misses
+# and exits; the grace lets it exit by itself (stdout flushed) rather than
+# be killed at the cap with its buffered hits lost.
+RESOLVE_GRACE_S = 2
 MAX_LAN = 512
 MAX_NAME_LEN = 63
 
 
 def _text(value) -> str:
+    """str from what subprocess hands back. TimeoutExpired.stdout is BYTES
+    on POSIX even with text=True (only Windows gives str)."""
+    if isinstance(value, bytes):
+        return value.decode('utf-8', 'replace')
     return value if isinstance(value, str) else ''
 
 
-def _run(cmd, timeout=5, keep_partial=False) -> str:
+def _run(cmd, timeout=5, keep_partial=False, quiet=False) -> str:
     """stdout of `cmd`, or "" on any failure: missing binary, timeout,
     non-zero exit. Nothing in this script may crash because a tool is
     absent; a missing piece just becomes null / empty in the payload, and
-    the reason goes to the debug log (--dry-run shows it).
+    the reason goes to the debug log (--dry-run shows it) unless quiet=True
+    (a sweep's expected misses would bury the real reasons).
 
-    keep_partial=True returns whatever stdout arrived before a timeout or a
-    non-zero exit instead of "": for a batch lookup whose hits are each a
-    line and whose misses only cost the exit status."""
+    keep_partial=True returns the stdout of a non-zero exit instead of "":
+    for a batch lookup whose hits are each a line and whose misses only
+    cost the exit status. On a timeout it returns what the child had
+    flushed before the kill, which for a printf-buffered tool is nothing -
+    so give such a tool a timeout past its own, and the exit-status path."""
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired as e:
-        logger.debug('%s: timed out after %ss', cmd[0], timeout)
+        if not quiet:
+            logger.debug('%s: timed out after %ss', cmd[0], timeout)
         return _text(e.stdout) if keep_partial else ''
     except (OSError, ValueError, subprocess.SubprocessError) as e:
-        logger.debug('%s: %s', cmd[0], e.__class__.__name__)
+        if not quiet:
+            logger.debug('%s: %s', cmd[0], e.__class__.__name__)
         return ''
     if out.returncode != 0:
-        logger.debug('%s: exit %d %s', cmd[0], out.returncode, _text(out.stderr)[:200].strip())
+        if not quiet:
+            logger.debug('%s: exit %d %s', cmd[0], out.returncode, _text(out.stderr)[:200].strip())
         return _text(out.stdout) if keep_partial else ''
     return _text(out.stdout)
 
@@ -169,6 +183,18 @@ def parse_addrs(text: str) -> dict:
         if len(parts) >= 4 and parts[2] == 'inet':
             addrs.setdefault(parts[1], parts[3].split('/')[0])
     return addrs
+
+
+def own_ips(addr_text: str) -> set:
+    """Every IPv4 address this box has, from `ip -4 -o addr show`."""
+    return {parts[3].split('/')[0] for parts in (line.split() for line in addr_text.splitlines())
+            if len(parts) >= 4 and parts[2] == 'inet'}
+
+
+def own_macs(link_text: str) -> set:
+    """Every lowercase link/ether MAC this box has, from `ip link show`."""
+    return {parts[1].lower() for parts in (line.split() for line in link_text.splitlines())
+            if len(parts) >= 2 and parts[0] == 'link/ether'}
 
 
 def default_route_iface(text: str) -> Optional[str]:
@@ -253,7 +279,8 @@ def ping_sweep(base: str, cap_s: float = SWEEP_CAP_S, workers: int = SWEEP_WORKE
     is read. The replies themselves are not needed. Whatever has not finished
     at the cap is abandoned (each ping gives up on its own within ~1 s)."""
     pool = ThreadPoolExecutor(max_workers=workers)
-    futures = [pool.submit(_run, ['ping', '-c1', '-W1', f'{base}.{n}'], 2) for n in range(1, 255)]
+    futures = [pool.submit(_run, ['ping', '-c1', '-W1', f'{base}.{n}'], timeout=2, quiet=True)
+               for n in range(1, 255)]
     try:
         wait(futures, timeout=cap_s)
     finally:
@@ -285,11 +312,12 @@ def _device_key(device: dict):
     return (tuple(int(p) if p.isdigit() else 0 for p in parts), NEIGH_STATES.index(device['state']))
 
 
-def avahi_names(ips: list, timeout: float = RESOLVE_CAP_S) -> dict:
+def avahi_names(ips: list, timeout: float = RESOLVE_CAP_S + RESOLVE_GRACE_S) -> dict:
     """{ip: mDNS name} from ONE `avahi-resolve-address -4 ip ip ...`: avahi
-    resolves them all in parallel, prints a `ip<TAB>name` line per hit and
-    exits non-zero for the misses, so the hits are kept whatever the exit
-    status and whatever arrived before the cap is kept on a timeout."""
+    resolves them all in parallel, prints a `ip<TAB>name` line per hit,
+    gives up on the misses after its own ~RESOLVE_CAP_S and exits non-zero,
+    so the hits are kept whatever the exit status. The timeout is the hard
+    cap past that: a kill there loses whatever avahi had not flushed."""
     if not ips:
         return {}
     out = _run(['avahi-resolve-address', '-4', *ips], timeout=timeout, keep_partial=True)
@@ -312,35 +340,43 @@ def resolve_names(devices: list, lookup: Callable[[list], dict] = avahi_names) -
     return devices
 
 
-def collect_self() -> dict:
-    iface, ip = self_interface(_run(['ip', '-4', '-o', 'addr', 'show']),
-                               _run(['ip', '-4', 'route', 'show', 'default']))
+def collect_self():
+    """(self record, every ip this box has, every MAC this box has). The
+    record is the payload's `self`; the sets let collect_lan leave out the
+    box's other interfaces (a dual-homed Pi sees its own eth0 from wlan0)."""
+    addr_text = _run(['ip', '-4', '-o', 'addr', 'show'])
+    link_text = _run(['ip', 'link', 'show'])
+    iface, ip = self_interface(addr_text, _run(['ip', '-4', 'route', 'show', 'default']))
     # Ask about wlan0 alone when that is the link; a Pi without one (or on
     # Ethernet) gets the unfiltered list, which still has the ACTIVE row.
     wifi_cmd = NMCLI_WIFI + (['ifname', WIFI_IFACE] if iface == WIFI_IFACE else [])
-    return {
+    record = {
         'ip': ip,
-        'mac': iface_mac(_run(['ip', 'link', 'show']), iface),
+        'mac': iface_mac(link_text, iface),
         'uptime_s': read_uptime_s(),
         'link': parse_wifi(_run(wifi_cmd, timeout=10)),
         'netwatch': netwatch_status(),
     }
+    return record, own_ips(addr_text), own_macs(link_text)
 
 
-def collect_lan(self_ip: Optional[str], self_mac: Optional[str], sweep: bool = True) -> list:
+def collect_lan(self_ip: Optional[str], own_ip_set=(), own_mac_set=(), sweep: bool = True) -> list:
     """The devices on the pad's own /24 and nothing else: a Pi with docker
     bridges or a second NIC has neighbour rows for other subnets, and a LAN
     device learned on two interfaces appears once per interface, so rows
     are kept to the pad's /24 and deduped on (ip, mac), best state first.
     Rows are not filtered by interface on purpose - on a dual-homed Pi the
-    sweep's answers can land on the other NIC's neighbour table."""
+    sweep's answers can land on the other NIC's neighbour table. Every
+    address and MAC of the box itself (own_ip_set / own_mac_set) is left
+    out; `self_ip` is always one of them."""
     base = subnet_base(self_ip) if self_ip else None
     if not base:
         return []
     if sweep:
         ping_sweep(base)
+    skip_ips, skip_macs = set(own_ip_set) | {self_ip}, set(own_mac_set)
     devices = [d for d in parse_neigh(_run(['ip', '-4', 'neigh']))
-               if subnet_base(d['ip']) == base and d['ip'] != self_ip and d['mac'] != self_mac]
+               if subnet_base(d['ip']) == base and d['ip'] not in skip_ips and d['mac'] not in skip_macs]
     devices.sort(key=_device_key)
     seen, unique = set(), []
     for device in devices:
@@ -426,8 +462,8 @@ def main(argv=None) -> int:
         return 0
     host = socket.gethostname().split('.')[0]
     room = os.environ.get('MUSICFIG_ROOM') or host
-    self_info = collect_self()
-    lan = collect_lan(self_info['ip'], self_info['mac'], sweep=sweep)
+    self_info, ips, macs = collect_self()
+    lan = collect_lan(self_info['ip'], ips, macs, sweep=sweep)
     try:
         payload = build_payload(room, host, self_info, lan)
     except ValueError as e:
