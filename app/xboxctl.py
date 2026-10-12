@@ -27,8 +27,18 @@ def load_config(tags: dict) -> None:
         'client_id': tags.get('xbox_client_id', ''),
         'client_secret': tags.get('xbox_client_secret', ''),
         'device_id': tags.get('xbox_device_id', ''),
+        # The console THIS pad drives (SmartGlass id); every action targets it
+        # unless the caller names another. Without it the account's consoles
+        # all answer - a game-room figure would wake the basement Xbox too.
+        'console_id': str(tags.get('xbox_console_id', '') or '').strip(),
     }
     logger.info("Xbox config loaded")
+
+
+def _target(console_id: Optional[str]) -> Optional[str]:
+    """The console an action should hit: the explicit argument, else the pad's
+    configured xbox_console_id, else None (= whatever the account lists)."""
+    return console_id or _config.get('console_id') or None
 
 
 def configured() -> bool:
@@ -136,10 +146,12 @@ async def power_on(console_id: str = None) -> bool:
         return False
 
     try:
+        console_id = _target(console_id)
         if console_id:
             await client.smartglass.wake_up(console_id)
         else:
-            # Wake up all consoles
+            # No console configured or named: wake every console on the account
+            logger.warning("xbox_console_id not set in tags.yml; waking every console on the account")
             consoles = await get_consoles()
             for console in consoles:
                 await client.smartglass.wake_up(console.id)
@@ -157,8 +169,10 @@ async def power_off(console_id: str = None) -> bool:
         return False
 
     try:
-        consoles = await get_consoles()
-        target_id = console_id or (consoles[0].id if consoles else None)
+        target_id = _target(console_id)
+        if not target_id:
+            consoles = await get_consoles()
+            target_id = consoles[0].id if consoles else None
 
         if target_id:
             await client.smartglass.turn_off(target_id)
@@ -177,8 +191,10 @@ async def launch_app(app_id: str, console_id: str = None) -> bool:
         return False
 
     try:
-        consoles = await get_consoles()
-        target_id = console_id or (consoles[0].id if consoles else None)
+        target_id = _target(console_id)
+        if not target_id:
+            consoles = await get_consoles()
+            target_id = consoles[0].id if consoles else None
 
         if target_id:
             # Launch the app
@@ -198,7 +214,7 @@ async def get_console_status(console_id: str = None) -> Optional[dict]:
         return None
 
     try:
-        response = await client.smartglass.get_console_status(console_id)
+        response = await client.smartglass.get_console_status(_target(console_id))
         return response
     except Exception as e:
         logger.error(f"Failed to get console status: {e}")

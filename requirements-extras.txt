@@ -6,3 +6,4 @@
 #   /opt/musicfig/.venv/bin/pip install -r requirements-extras.txt
 pyatv            # Apple TV (Disney/Netflix/YouTube tags) and HomePod AirPlay
 aiohuesyncbox    # Philips Hue Play HDMI Sync Box
+xbox-webapi>=2.1,<3   # Xbox Live SmartGlass: wake the console / launch an app (xbox tags)
