@@ -260,10 +260,54 @@ WantedBy=timers.target
 UNIT
 chmod 0644 /etc/systemd/system/musicfig-netwatch.{service,timer}
 
+# Network report: this pad's view of the house network (its Wi-Fi link, the
+# watchdog's state, a ping sweep of its /24) goes to gsd-cloud (the Network
+# page) every 5 minutes. Same key file as the figure report, so it is just
+# as quiet on a pad that is not reporting. Runs as the service user, never
+# root (it executes the ${SVC_USER}-owned venv, which is exactly why netwatch
+# is copied out of the checkout): unprivileged ping works on Raspberry Pi OS
+# (ping_group_range sysctl / file caps), `ip neigh` and `nmcli` are
+# read-only, the watchdog's counter dir is 0755, and the systemd-journal
+# group covers `journalctl -u musicfig-netwatch`.
+log "Writing musicfig-network units..."
+cat > /etc/systemd/system/musicfig-network.service <<UNIT
+[Unit]
+Description=Musicfig - report this pad's view of the network to gsd-cloud
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=${SVC_USER}
+Group=${SVC_USER}
+SupplementaryGroups=systemd-journal
+WorkingDirectory=${SVC_HOME}
+TimeoutStartSec=3min
+Environment=MUSICFIG_ROOM=$(hostname -s)
+Environment=MUSICFIG_REPORT_KEY_FILE=${CONF_DIR}/pad-report.key
+ExecStart=${VENV_DIR}/bin/python ${APP_DIR}/scripts/report_network.py
+UNIT
+cat > /etc/systemd/system/musicfig-network.timer <<UNIT
+[Unit]
+Description=Musicfig - network report every 5 minutes
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+AccuracySec=30s
+Unit=musicfig-network.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+chmod 0644 /etc/systemd/system/musicfig-network.{service,timer}
+
 systemctl daemon-reload
 systemctl enable --quiet musicfig.service
 systemctl enable --quiet --now musicfig-report.path musicfig-report.timer
 systemctl enable --quiet --now musicfig-netwatch.timer
+systemctl enable --quiet --now musicfig-network.timer
 log "Starting musicfig.service..."
 systemctl restart musicfig.service
 sleep 2
@@ -303,5 +347,12 @@ cat <<HINTS
   Network watchdog: every 2 min the Pi pings its gateway; 2 misses bounce
     Wi-Fi, 4 misses reboot (never within 20 min of boot).
       journalctl -u musicfig-netwatch -g 'netwatch:'    # every blip and what was done about it
+  Network page (optional): with the same ${CONF_DIR}/pad-report.key in place
+    the pad also reports its Wi-Fi link, the watchdog's state and the devices
+    on its /24 to gsd-cloud every 5 minutes; check with (sudo -u alone cannot
+    add the systemd-journal group, so the netwatch part would read as zeros)
+      sudo systemd-run -p User=${SVC_USER} -p Group=${SVC_USER} -p SupplementaryGroups=systemd-journal \\
+        --wait --pipe ${VENV_DIR}/bin/python ${APP_DIR}/scripts/report_network.py --dry-run
+      journalctl -u musicfig-network
 
 HINTS
