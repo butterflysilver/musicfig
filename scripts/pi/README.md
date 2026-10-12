@@ -121,6 +121,26 @@ the tags file are exactly what musicfig uses.
   /opt/musicfig/scripts/report_pad.py --dry-run` prints the payload;
   `journalctl -u musicfig-report` shows the sends.
 
+## Network watchdog
+
+A Pi 5's Wi-Fi chip occasionally wedges: the router still shows the Pi
+online and the kiosk keeps cycling the photos it already has, but nothing
+passes and ssh is dead. The hardware watchdog (`RuntimeWatchdogSec` from the
+kiosk recipe) only catches a hung kernel, so the installer adds
+`musicfig-netwatch.timer`, which runs `scripts/pi/netwatch.sh` (copied to
+`/usr/local/sbin/musicfig-netwatch`, root-owned) every 2 minutes:
+
+| Consecutive misses pinging the gateway | Action |
+|---|---|
+| 1 | logged |
+| 2+ | `nmcli radio wifi off` / `on` (autoconnect rejoins) |
+| 4+ | `systemctl reboot` - but never within 20 minutes of boot, so a router that is down means one reboot per ~20 minutes, not a boot loop |
+
+The counter lives in `/run/musicfig-netwatch/` (tmpfs, cleared by the reboot)
+and resets on the first successful ping. `journalctl -u musicfig-netwatch`
+shows every blip and what was done about it; a healthy Pi logs nothing.
+`tests/test_netwatch.py` drives the ladder with fake `ping`/`nmcli`/`systemctl`.
+
 ## Useful commands
 
 ```
