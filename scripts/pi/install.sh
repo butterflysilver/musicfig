@@ -230,9 +230,40 @@ WantedBy=timers.target
 UNIT
 chmod 0644 /etc/systemd/system/musicfig-report.{service,path,timer}
 
+# Network watchdog: a wedged Wi-Fi chip leaves the Pi "online" on the router
+# with nothing passing; scripts/pi/netwatch.sh bounces Wi-Fi, then reboots,
+# when the gateway stays unreachable. It runs as root, so it is copied out of
+# the ${SVC_USER}-owned checkout into a root-owned path first.
+log "Writing musicfig-netwatch units..."
+install -o root -g root -m 0755 "${APP_DIR}/scripts/pi/netwatch.sh" /usr/local/sbin/musicfig-netwatch
+cat > /etc/systemd/system/musicfig-netwatch.service <<UNIT
+[Unit]
+Description=Musicfig - network watchdog (bounce Wi-Fi, then reboot, when the gateway is unreachable)
+
+[Service]
+Type=oneshot
+TimeoutStartSec=90s
+ExecStart=/usr/local/sbin/musicfig-netwatch
+UNIT
+cat > /etc/systemd/system/musicfig-netwatch.timer <<UNIT
+[Unit]
+Description=Musicfig - network watchdog every 2 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=2min
+AccuracySec=30s
+Unit=musicfig-netwatch.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+chmod 0644 /etc/systemd/system/musicfig-netwatch.{service,timer}
+
 systemctl daemon-reload
 systemctl enable --quiet musicfig.service
 systemctl enable --quiet --now musicfig-report.path musicfig-report.timer
+systemctl enable --quiet --now musicfig-netwatch.timer
 log "Starting musicfig.service..."
 systemctl restart musicfig.service
 sleep 2
@@ -269,5 +300,8 @@ cat <<HINTS
     The map is sent on every tags.yml change and hourly; check with
       sudo -u ${SVC_USER} ${VENV_DIR}/bin/python ${APP_DIR}/scripts/report_pad.py --dry-run
       journalctl -u musicfig-report
+  Network watchdog: every 2 min the Pi pings its gateway; 2 misses bounce
+    Wi-Fi, 4 misses reboot (never within 20 min of boot).
+      journalctl -u musicfig-netwatch -g 'netwatch:'    # every blip and what was done about it
 
 HINTS
