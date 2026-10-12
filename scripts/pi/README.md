@@ -137,8 +137,9 @@ kiosk recipe) only catches a hung kernel, so the installer adds
 | 4+ | `systemctl reboot` - but never within 20 minutes of boot, so a router that is down means one reboot per ~20 minutes, not a boot loop |
 
 The counter lives in `/run/musicfig-netwatch/` (tmpfs, cleared by the reboot)
-and resets on the first successful ping. `journalctl -u musicfig-netwatch`
-shows every blip and what was done about it; a healthy Pi logs nothing.
+and resets on the first successful ping. `journalctl -u musicfig-netwatch -g 'netwatch:'`
+shows every blip and what was done about it (the script itself is silent on a
+healthy Pi; systemd still logs each 2-minute run, hence the `-g` filter).
 `tests/test_netwatch.py` drives the ladder with fake `ping`/`nmcli`/`systemctl`.
 
 ## Useful commands

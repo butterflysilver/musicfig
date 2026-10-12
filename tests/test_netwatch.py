@@ -51,7 +51,7 @@ class NetwatchTests(unittest.TestCase):
         elif os.path.exists(self.gateway_up):
             os.remove(self.gateway_up)
 
-    def run_check(self, **env_overrides):
+    def run_check(self, expect_rc=0, **env_overrides):
         env = dict(os.environ)
         env['PATH'] = self.bin + os.pathsep + env.get('PATH', '')
         env.update({
@@ -62,7 +62,8 @@ class NetwatchTests(unittest.TestCase):
         })
         env.update(env_overrides)
         proc = subprocess.run([BASH, SCRIPT], env=env, capture_output=True, text=True)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        if expect_rc is not None:
+            self.assertEqual(proc.returncode, expect_rc, proc.stderr)
         return proc.stdout
 
     def calls_made(self):
@@ -153,6 +154,28 @@ class NetwatchTests(unittest.TestCase):
         self.assertIn('no default route', out)
         self.assertEqual(self.failures(), 1)
         self.assertFalse([c for c in self.calls_made() if c.startswith('ping ')])
+
+    def test_failing_ip_counts_as_a_miss_instead_of_aborting(self):
+        self.fake('ip', 'exit 2')
+        out = self.run_check()
+        self.assertIn('no default route', out)
+        self.assertEqual(self.failures(), 1)
+
+    def test_unwritable_state_dir_degrades_to_log_only(self):
+        # a file where the directory should be: mkdir -p and the write both fail
+        open(self.state, 'w').close()
+        self.set_gateway(up=False)
+        out = self.run_check()
+        self.assertIn('cannot create', out)
+        self.assertIn('cannot write', out)
+        self.assertIn('consecutive failures: 1', out)
+
+    def test_wifi_is_switched_back_on_if_the_bounce_is_interrupted(self):
+        self.set_gateway(up=False)
+        self.run_check()
+        self.fake('sleep', 'kill -TERM $PPID')   # the pause is where a kill would land
+        self.run_check(expect_rc=None)           # the script dies of the signal...
+        self.assertEqual(self.calls_made()[-1], 'nmcli radio wifi on')   # ...after the trap
 
     def test_garbage_in_the_state_file_is_treated_as_zero(self):
         os.makedirs(self.state)

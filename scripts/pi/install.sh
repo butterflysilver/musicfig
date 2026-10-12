@@ -242,6 +242,7 @@ Description=Musicfig - network watchdog (bounce Wi-Fi, then reboot, when the gat
 
 [Service]
 Type=oneshot
+TimeoutStartSec=90s
 ExecStart=/usr/local/sbin/musicfig-netwatch
 UNIT
 cat > /etc/systemd/system/musicfig-netwatch.timer <<UNIT
@@ -301,6 +302,6 @@ cat <<HINTS
       journalctl -u musicfig-report
   Network watchdog: every 2 min the Pi pings its gateway; 2 misses bounce
     Wi-Fi, 4 misses reboot (never within 20 min of boot).
-      journalctl -u musicfig-netwatch                   # every blip and what was done about it
+      journalctl -u musicfig-netwatch -g 'netwatch:'    # every blip and what was done about it
 
 HINTS

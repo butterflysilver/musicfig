@@ -43,26 +43,31 @@ BOUNCE_PAUSE_S=5
 
 log() { echo "netwatch: $*"; }
 
-mkdir -p "${STATE_DIR}"
+# A state dir that cannot be written degrades to "log only, no memory"
+# rather than killing the check (set -e would otherwise exit here).
+mkdir -p "${STATE_DIR}" 2>/dev/null || log "cannot create ${STATE_DIR}"
 FAIL_FILE="${STATE_DIR}/failures"
 failures=0
 if [[ -r "${FAIL_FILE}" ]]; then
-    failures="$(tr -dc '0-9' < "${FAIL_FILE}")"
+    failures="$(tr -dc '0-9' < "${FAIL_FILE}" || true)"
     failures="${failures:-0}"
 fi
+remember() { echo "$1" > "${FAIL_FILE}" 2>/dev/null || log "cannot write ${FAIL_FILE}"; }
 
 uptime_s() {
     local up
-    up="$(cut -d' ' -f1 "${UPTIME_FILE}" 2>/dev/null || echo 0)"
-    echo "${up%.*}"
+    up="$(cut -d' ' -f1 "${UPTIME_FILE}" 2>/dev/null || true)"
+    up="${up%.*}"
+    echo "${up:-0}"
 }
 
 # The gateway is the best thing to ping: it says "this Pi can talk to the
 # house" without depending on the internet, and it is what the pad needs
-# for AirPlay, Yoto and the Figures report alike.
+# for AirPlay, Yoto and the Figures report alike. A failing `ip` (netlink
+# upset while the Wi-Fi stack is wedged) must count as a miss, not abort.
 target="${NETWATCH_TARGET:-}"
 if [[ -z "${target}" ]]; then
-    target="$(ip -4 route show default 2>/dev/null | awk '/^default/ {print $3; exit}')"
+    target="$(ip -4 route show default 2>/dev/null | awk '/^default/ {print $3; exit}' || true)"
 fi
 
 reachable=0
@@ -76,12 +81,12 @@ if [[ "${reachable}" -eq 1 ]]; then
     if [[ "${failures}" -gt 0 ]]; then
         log "gateway ${target} reachable again after ${failures} failed check(s)"
     fi
-    echo 0 > "${FAIL_FILE}"
+    remember 0
     exit 0
 fi
 
 failures=$((failures + 1))
-echo "${failures}" > "${FAIL_FILE}"
+remember "${failures}"
 log "cannot reach ${target:-the gateway} (consecutive failures: ${failures})"
 
 if [[ "${failures}" -ge "${REBOOT_AT}" ]]; then
@@ -96,8 +101,13 @@ fi
 
 if [[ "${failures}" -ge "${BOUNCE_AT}" ]]; then
     log "bouncing Wi-Fi"
+    # NetworkManager persists the radio switch; if this run is killed during
+    # the pause the Pi would boot with Wi-Fi off, so the trap turns it back
+    # on no matter how the script ends.
+    trap 'nmcli radio wifi on >/dev/null 2>&1 || true' EXIT
     nmcli radio wifi off || true
     sleep "${BOUNCE_PAUSE_S}"
     nmcli radio wifi on || true
+    trap - EXIT
 fi
 exit 0
