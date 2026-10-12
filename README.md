@@ -162,6 +162,8 @@ Notes:
   Never commit them, never paste them into an issue. Copy them to a Pi with `scp`.
 * The service runs as an unprivileged system user; the pad is the only USB device it can open (udev rule).
 * Nothing listens on the internet. The web UI binds to localhost; AirPlay and Apple TV traffic stays on the LAN.
+  The one outbound report (`scripts/report_pad.py`, the Figures page) sends figure names, actions and titles
+  only: every secret-looking key is stripped first and the script refuses to send a payload that still holds one.
 * The examples in this README are demo data. Real device names, addresses and identifiers live only in the
   private config.
 
