@@ -32,6 +32,7 @@ BASE = {
         'bbbb': {'name': 'Plain', 'mp3': 'plain.mp3'},
         'dddd': {'name': 'Frozen on the Yoto', 'yoto': 'j5VA8', 'yoto_player': '@room'},
         'eeee': {'name': 'Frozen on the mini', 'yoto': 'j5VA8', 'yoto_player': 'Grey mini'},
+        'ffff': {'name': 'Brave on the HomePod', 'yoto_airplay': '3CqDM', 'homepod': '@room'},
         'cccc': 'not-a-dict',
     },
 }
@@ -63,6 +64,17 @@ class ResolveForRoomTests(unittest.TestCase):
         self.assertNotIn('homepod', t)
         self.assertNotIn('airplay', t)
         self.assertEqual(t['name'], 'Peter Pan')
+
+    def test_yoto_airplay_at_room_resolves_or_does_nothing(self):
+        # life-ops #120: same rule as airplay - no HomePod in the room, no action
+        t = resolve_for_room(BASE, 'guest-room')['identifier']['ffff']
+        self.assertEqual(t['yoto_airplay'], '3CqDM')
+        self.assertEqual(t['homepod'], 'Guest Room HomePod')
+        for room in ('kitchen', 'garage'):
+            t = resolve_for_room(BASE, room)['identifier']['ffff']
+            self.assertNotIn('yoto_airplay', t, room)
+            self.assertNotIn('homepod', t, room)
+            self.assertEqual(t['name'], 'Brave on the HomePod')
 
     def test_entries_without_rooms_pass_through(self):
         r = resolve_for_room(BASE, 'kitchen')['identifier']
