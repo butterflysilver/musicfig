@@ -66,6 +66,7 @@ socket_timeout = __import__("socket").timeout
 DEEPLINK_APP_ID = "com.celerity.DeepLink"
 DEEPLINK_FOREGROUND_WAIT = 2.5
 FIRST_WAKE_WINDOW = 8  # seconds to give the first turn_on before resending it
+STALE_CLOSE_TIMEOUT = 0.3  # seconds to let a dead connection's close tasks raise before dropping them
 ACTION_WAIT_S = 120  # longest a launch waits for a pause still on the wire (Linux SYN retries ~127 s)
 
 
@@ -156,7 +157,11 @@ async def connect(name=None, ip=None):
     if _atv is not None:
         if _atv_loop is not asyncio.get_running_loop():
             logger.info("Cached Apple TV connection belongs to a finished event loop, reconnecting...")
-            await _close_quietly(_atv)
+            # The old transport is dead: its teardown round trips can never
+            # finish, so waiting the full close timeout only added 3 s to
+            # every lift and launch (life-ops #125). Give the tasks one turn
+            # to raise (the ERROR lines #21 silenced) and drop the rest.
+            await _close_quietly(_atv, timeout=STALE_CLOSE_TIMEOUT)
             _atv = None
         else:
             try:
