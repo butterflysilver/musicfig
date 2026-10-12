@@ -95,6 +95,32 @@ with the household shared secret in `/etc/musicfig/yoto-tracks.key`
   playing on <name>`; a red flash with `... is offline` means the Yoto is asleep
   or off Wi-Fi, `the shared key was rejected` means the key file is stale.
 
+## Figures page (optional)
+
+`scripts/report_pad.py` sends this pad's figure map to gsd-cloud
+(`POST /api/pads/report`), which shows every figure across every room at
+`/figures`. The installer adds `musicfig-report.path` (fires when
+`/etc/musicfig/tags.yml` changes) and `musicfig-report.timer` (hourly); both
+run `musicfig-report.service` with the pad's own environment, so the room and
+the tags file are exactly what musicfig uses.
+
+* Enable it by putting the gsd-cloud `MUSICFIG_REPORT_KEY` in
+  `/etc/musicfig/pad-report.key` (`root:musicfig 0640`, `scp` it). Without the
+  file the service exits 0 and logs "pad reporting is not set up here".
+* What is sent: per figure the UID, `name`, the one action it does in this
+  room (resolved like the pad resolves it: room overrides, `@room`), the
+  target (URL / card id / file), a title (Yoto card titles from the Yoto MCP,
+  Apple TV titles from the link slug, or an explicit `title:` on the tag) and
+  the device (Apple TV name, HomePod, Yoto player). Figures with no action in
+  this room are sent as `none` so the page can show them as unmapped.
+* What is never sent: any key matching `credential|token|secret|password|
+  api_key|hook` at any depth (Apple TV pairing credentials, the sync box
+  token, Slack webhooks) and any value that looks like an opaque blob. The
+  script refuses to send a payload that still contains one.
+* Check: `sudo -u musicfig /opt/musicfig/.venv/bin/python
+  /opt/musicfig/scripts/report_pad.py --dry-run` prints the payload;
+  `journalctl -u musicfig-report` shows the sends.
+
 ## Useful commands
 
 ```

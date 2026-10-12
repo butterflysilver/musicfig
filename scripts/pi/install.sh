@@ -178,8 +178,61 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 chmod 0644 "${UNIT_FILE}"
+
+# Pad report: the figure map goes to gsd-cloud (the Figures page) whenever
+# tags.yml changes and once an hour. The service exits 0 quietly until
+# ${CONF_DIR}/pad-report.key exists, so these units are harmless on a pad
+# that is not reporting. Same environment as the pad so the room and the
+# tags file are the same ones musicfig itself uses.
+log "Writing musicfig-report units..."
+cat > /etc/systemd/system/musicfig-report.service <<UNIT
+[Unit]
+Description=Musicfig - report this pad's figure map to gsd-cloud
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=${SVC_USER}
+Group=${SVC_USER}
+WorkingDirectory=${SVC_HOME}
+Environment=PYTHONPATH=${CONF_DIR}
+Environment=MUSICFIG_TAGS_FILE=${CONF_DIR}/tags.yml
+Environment=MUSICFIG_ROOM=$(hostname -s)
+Environment=MUSICFIG_YOTO_TRACKS_URL=${MUSICFIG_YOTO_TRACKS_URL:-https://yoto-mcp-production.up.railway.app}
+Environment=MUSICFIG_YOTO_TRACKS_KEY_FILE=${CONF_DIR}/yoto-tracks.key
+Environment=MUSICFIG_REPORT_KEY_FILE=${CONF_DIR}/pad-report.key
+ExecStart=${VENV_DIR}/bin/python ${APP_DIR}/scripts/report_pad.py
+UNIT
+cat > /etc/systemd/system/musicfig-report.path <<UNIT
+[Unit]
+Description=Musicfig - re-report the figure map when tags.yml changes
+
+[Path]
+PathChanged=${CONF_DIR}/tags.yml
+Unit=musicfig-report.service
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat > /etc/systemd/system/musicfig-report.timer <<UNIT
+[Unit]
+Description=Musicfig - hourly figure map report
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+Unit=musicfig-report.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+chmod 0644 /etc/systemd/system/musicfig-report.{service,path,timer}
+
 systemctl daemon-reload
 systemctl enable --quiet musicfig.service
+systemctl enable --quiet --now musicfig-report.path musicfig-report.timer
 log "Starting musicfig.service..."
 systemctl restart musicfig.service
 sleep 2
@@ -211,5 +264,10 @@ cat <<HINTS
     (play on the Yoto player itself; yoto_player: "@room" + room_yoto_players).
   Spotify (optional): add CLIENT_ID/CLIENT_SECRET to ${CONF_DIR}/config.py
     then follow scripts/pi/README.md for the SSH port-forward OAuth dance.
+  Figures page (optional): put the gsd-cloud MUSICFIG_REPORT_KEY in
+    ${CONF_DIR}/pad-report.key (root:${SVC_USER} 0640; scp it, never paste it).
+    The map is sent on every tags.yml change and hourly; check with
+      sudo -u ${SVC_USER} ${VENV_DIR}/bin/python ${APP_DIR}/scripts/report_pad.py --dry-run
+      journalctl -u musicfig-report
 
 HINTS

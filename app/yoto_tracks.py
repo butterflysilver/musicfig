@@ -97,6 +97,28 @@ def fetch_tracks(card_id: str) -> list:
     return playable
 
 
+def card_title(card_id: str) -> Optional[str]:
+    """The card's title from the same /tracks document fetch_tracks() reads,
+    for the pad report (scripts/report_pad.py). None, with the reason
+    logged, on any failure - never raises."""
+    card_id = str(card_id or "").strip()
+    key = _shared_key()
+    if not card_id or key is None:
+        return None
+    url = f"{_base_url()}/api/cards/{quote(card_id, safe='')}/tracks"
+    try:
+        response = requests.get(url, headers={HEADER: key}, timeout=TIMEOUT_S)
+        payload = response.json() if response.status_code == 200 else None
+    except (requests.RequestException, ValueError) as e:
+        logger.error("Yoto title: card %s lookup failed (%s)", card_id, e.__class__.__name__)
+        return None
+    if not isinstance(payload, dict):
+        logger.error("Yoto title: HTTP %s for card %s", response.status_code, card_id)
+        return None
+    title = payload.get("title")
+    return str(title) if title else None
+
+
 def _player_path(player: Optional[str], action: str) -> str:
     selector = str(player or "").strip() or ANY_ONLINE_PLAYER
     return f"{_base_url()}/api/players/{quote(selector, safe='')}/{action}"

@@ -131,5 +131,29 @@ class PlayerRoutesTests(unittest.TestCase):
             post.assert_not_called()
 
 
+class CardTitleTests(unittest.TestCase):
+    def setUp(self):
+        self.key = mock.patch.object(yt, "_shared_key", return_value="secret-for-tests")
+        self.key.start()
+        self.addCleanup(self.key.stop)
+
+    def test_title_from_the_tracks_document(self):
+        with mock.patch.object(yt.requests, "get", return_value=_Reply(200, GOOD)) as get:
+            self.assertEqual(yt.card_title("j5VA8"), "Frozen")
+        self.assertIn("/api/cards/j5VA8/tracks", get.call_args.args[0])
+
+    def test_failures_are_none_never_raise(self):
+        for reply in (_Reply(404, {}), _Reply(500, {}), _Reply(200, bad_json=True), _Reply(200, {"tracks": []})):
+            with mock.patch.object(yt.requests, "get", return_value=reply):
+                self.assertIsNone(yt.card_title("j5VA8"))
+        with mock.patch.object(yt.requests, "get", side_effect=yt.requests.ConnectionError()):
+            self.assertIsNone(yt.card_title("j5VA8"))
+        with mock.patch.object(yt, "_shared_key", return_value=None), \
+                mock.patch.object(yt.requests, "get") as get:
+            self.assertIsNone(yt.card_title("j5VA8"))
+            get.assert_not_called()
+        self.assertIsNone(yt.card_title(""))
+
+
 if __name__ == '__main__':
     unittest.main()
