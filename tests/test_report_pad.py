@@ -133,6 +133,20 @@ class SecretTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rp.build_payload(long_tags, 'r', 'h', None, now=NOW)
 
+    def test_pyatv_style_credential_is_refused_wherever_it_sits(self):
+        """Real pairing credentials are colon-separated hex segments."""
+        cred = ':'.join(['a1b2c3d4e5f6' * 4] * 4)  # 4 x 48 hex, colon-joined, < 500 chars
+        for field in ('title', 'name'):
+            tags = {'identifier': {'a1': {'name': 'X', 'yoto': 'c1', field: cred}}}
+            with self.assertRaises(ValueError, msg=field):
+                rp.build_payload(tags, 'r', 'h', None, now=NOW)
+
+    def test_command_lines_never_leave_the_pi(self):
+        tags = {'identifier': {'a1': {'name': 'X', 'command': "curl -u admin:hunter2 http://x/api -H 'Authorization: Bearer abc'"}}}
+        f = rp.build_payload(tags, 'r', 'h', None, now=NOW)['figures'][0]
+        self.assertEqual((f['action'], f['target']), ('command', 'curl'))
+        self.assertNotIn('hunter2', str(f))
+
     def test_ordinary_values_pass_the_blob_check(self):
         tags = {'identifier': {'a1': {'name': 'Creeper', 'appletv_url':
                 'https://tv.apple.com/us/movie/a-charlie-brown-thanksgiving/umc.cmc.7grdgbjdq3tiy37f4dc3yeyms'}}}
@@ -189,6 +203,47 @@ class MainTests(unittest.TestCase):
             with mock.patch.object(rp.requests, 'post') as post:
                 self.assertEqual(rp.main([]), 0)
         post.assert_not_called()
+
+    def test_unreadable_key_file_is_a_failure_not_silence(self):
+        """A key that landed with the wrong owner or as a directory must make
+        the unit fail, not log "not set up" forever."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {'MUSICFIG_REPORT_KEY_FILE': d}):
+                with mock.patch.object(rp.requests, 'post') as post:
+                    self.assertEqual(rp.main([]), 1)
+            post.assert_not_called()
+
+    def test_malformed_tags_file_is_a_logged_failure(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile('w', suffix='.yml', delete=False, encoding='utf-8') as f:
+            f.write("identifier:\n  - just\n  - a list\n")
+            path = f.name
+        try:
+            env = {'MUSICFIG_REPORT_KEY_FILE': '/nonexistent/key', 'MUSICFIG_TAGS_FILE': path}
+            with mock.patch.dict(os.environ, env), self.assertLogs('report_pad', level='ERROR') as logs:
+                self.assertEqual(rp.main(['--dry-run', '--no-titles']), 1)
+        finally:
+            os.unlink(path)
+        self.assertIn('not a musicfig tags file', logs.output[-1])
+
+    def test_title_lookups_stop_after_the_first_failure(self):
+        calls = []
+
+        def lookup(cid):
+            calls.append(cid)
+            return None
+        titles = rp._titles_until_first_failure(lookup)
+        self.assertIsNone(titles('a'))
+        self.assertIsNone(titles('b'))
+        self.assertEqual(calls, ['a'])
+
+    def test_device_fallbacks_match_the_pad(self):
+        tags = {'default_homepod': 'Office HomePod',
+                'identifier': {'a1': {'airplay': 'x.mp3'}, 'a2': {'yoto': 'c1'}}}
+        figs = {f['uid']: f for f in rp.build_payload(tags, 'r', 'h', None, now=NOW)['figures']}
+        self.assertEqual(figs['a1']['device'], 'Office HomePod')
+        self.assertEqual(figs['a2']['device'], '@online')
 
     def test_dry_run_prints_without_a_key(self):
         import io

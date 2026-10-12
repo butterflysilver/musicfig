@@ -196,7 +196,7 @@ Type=oneshot
 User=${SVC_USER}
 Group=${SVC_USER}
 WorkingDirectory=${SVC_HOME}
-Environment=PYTHONPATH=${CONF_DIR}
+TimeoutStartSec=10min
 Environment=MUSICFIG_TAGS_FILE=${CONF_DIR}/tags.yml
 Environment=MUSICFIG_ROOM=$(hostname -s)
 Environment=MUSICFIG_YOTO_TRACKS_URL=${MUSICFIG_YOTO_TRACKS_URL:-https://yoto-mcp-production.up.railway.app}

@@ -64,8 +64,9 @@ RETRIES = 3
 # Any key matching this never leaves the Pi, at any depth of the tags file.
 SECRET_KEY_RE = re.compile(r'credential|token|secret|password|api[-_]?key|hook', re.I)
 # A string value that is only an opaque blob (no spaces, no URL punctuation)
-# of 64+ chars is a credential, whatever key it sits under.
-SECRET_VALUE_RE = re.compile(r'[A-Za-z0-9+/=_-]{64,}')
+# of 64+ chars is a credential, whatever key it sits under. ':' is in the
+# class because pyatv pairing credentials are colon-separated hex segments.
+SECRET_VALUE_RE = re.compile(r'[A-Za-z0-9+/=_:-]{64,}')
 MAX_VALUE_LEN = 500
 
 # Tag keys that are actions, most specific first: a tag carrying several
@@ -155,9 +156,9 @@ def _device_for(action: str, entry: dict, resolved_tags: dict) -> Optional[str]:
     if action in ('appletv', 'deeplink', 'youtube', 'netflix', 'disney'):
         return resolved_tags.get('appletv_name') or None
     if action in ('airplay', 'yoto_airplay'):
-        return entry.get('homepod') or None
+        return entry.get('homepod') or resolved_tags.get('default_homepod') or None
     if action == 'yoto':
-        return entry.get('yoto_player') or None
+        return entry.get('yoto_player') or '@online'
     return None
 
 
@@ -178,7 +179,12 @@ def figure_record(uid: str, entry, resolved_entry, resolved_tags: dict, titles) 
     key, action = present[0]
     target = resolved_entry.get(key)
     rec['action'] = action
-    rec['target'] = str(target) if not isinstance(target, bool) else None
+    if action == 'command':
+        # A command line is run with shell=True on the pad and is the natural
+        # place for an inline credential: ship the program name only.
+        rec['target'] = str(target).split()[0] if str(target).split() else None
+    else:
+        rec['target'] = str(target) if not isinstance(target, bool) else None
     rec['device'] = _device_for(action, resolved_entry, resolved_tags)
     explicit = resolved_entry.get('title')
     if explicit:
@@ -240,12 +246,33 @@ def musicfig_version() -> Optional[str]:
         return None
 
 
+def _titles_until_first_failure(lookup):
+    """Wrap the Yoto title lookup so one unreachable MCP costs one timeout,
+    not one per card: after the first None every further card is None."""
+    state = {'dead': False}
+
+    def titles(card_id):
+        if state['dead']:
+            return None
+        title = lookup(card_id)
+        if title is None:
+            state['dead'] = True
+        return title
+    return titles
+
+
 def read_key(path: str) -> Optional[str]:
+    """The report key, or None when the file does not exist (reporting is
+    not set up on this pad). Any other failure (EACCES, a directory, bad
+    encoding) raises OSError so the unit shows failed instead of logging
+    "not set up" forever."""
     try:
         with open(path, 'r', encoding='utf-8') as f:
             key = f.read().strip()
-    except OSError:
+    except FileNotFoundError:
         return None
+    except UnicodeDecodeError as e:
+        raise OSError(f'{path}: not a text file') from e
     return key or None
 
 
@@ -277,7 +304,11 @@ def main(argv=None) -> int:
     dry_run = '--dry-run' in argv
     no_titles = '--no-titles' in argv
     key_file = os.environ.get('MUSICFIG_REPORT_KEY_FILE') or DEFAULT_KEY_FILE
-    key = read_key(key_file)
+    try:
+        key = read_key(key_file)
+    except OSError as e:
+        logger.error('report: cannot read the key file %s (%s)', key_file, e)
+        return 1
     if key is None and not dry_run:
         logger.info('report: no key at %s; pad reporting is not set up here', key_file)
         return 0
@@ -285,15 +316,19 @@ def main(argv=None) -> int:
     try:
         with open(tags_file, 'r', encoding='utf-8') as f:
             raw = yaml.load(f, Loader=yaml.FullLoader) or {}
-    except (OSError, yaml.YAMLError) as e:
+    except (OSError, yaml.YAMLError, UnicodeDecodeError) as e:
         logger.error('report: cannot read %s (%s)', tags_file, e.__class__.__name__)
         return 1
-    room = os.environ.get('MUSICFIG_ROOM') or socket.gethostname().split('.')[0]
-    titles = None if no_titles else yoto_tracks.card_title
+    host = socket.gethostname().split('.')[0]
+    room = os.environ.get('MUSICFIG_ROOM') or host
+    titles = None if no_titles else _titles_until_first_failure(yoto_tracks.card_title)
     try:
-        payload = build_payload(raw, room, socket.gethostname().split('.')[0], musicfig_version(), titles)
+        payload = build_payload(raw, room, host, musicfig_version(), titles)
     except ValueError as e:
         logger.error('%s', e)
+        return 1
+    except (AttributeError, TypeError) as e:
+        logger.error('report: %s is not a musicfig tags file (%s)', tags_file, e.__class__.__name__)
         return 1
     if dry_run:
         print(json.dumps(payload, indent=2))
