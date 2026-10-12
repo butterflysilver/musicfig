@@ -21,6 +21,15 @@ lights: on
 # deeplink_server: http://192.168.1.50   # the Deeplink tvOS app's web server, for deeplink: tags
 # deeplink_app_id: com.celerity.DeepLink  # opened over pyatv when that server is not answering
 
+# Xbox (optional): a figure with `xbox: true` wakes the console, `xbox_app: <store id>`
+# then launches an app. Each pad drives ONE console - name it, or every console on
+# the account wakes. Quote the id (YAML would read a digit-only one as a number).
+# Find ids: /opt/musicfig/.venv/bin/python -c "import app.xboxctl as x, yaml; ..." or
+# the laptop's xbox_login helper, which lists them after sign-in. Sign-in tokens live
+# only in /opt/musicfig/xbox_tokens.json (never here); the client secret stays here.
+# xbox_client_id: "<azure app id>"
+# xbox_client_secret: "<azure app secret>"
+# xbox_console_id: "F4000F3ACB4A6A80"   # this pad's console
 # Room awareness (optional). Each Pi knows its room (MUSICFIG_ROOM, defaults
 # to the hostname). A tag can behave differently per room with a `rooms:`
 # block, and `homepod: "@room"` targets the HomePod listed for that room here.

@@ -35,7 +35,7 @@ def load_config(tags: dict) -> None:
     logger.info("Xbox config loaded")
 
 
-def _target(console_id):
+def _target(console_id: Optional[str]) -> Optional[str]:
     """The console an action should hit: the explicit argument, else the pad's
     configured xbox_console_id, else None (= whatever the account lists)."""
     return console_id or _config.get('console_id') or None
@@ -151,6 +151,7 @@ async def power_on(console_id: str = None) -> bool:
             await client.smartglass.wake_up(console_id)
         else:
             # No console configured or named: wake every console on the account
+            logger.warning("xbox_console_id not set in tags.yml; waking every console on the account")
             consoles = await get_consoles()
             for console in consoles:
                 await client.smartglass.wake_up(console.id)
