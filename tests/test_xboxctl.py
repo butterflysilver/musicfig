@@ -65,7 +65,7 @@ class _FakeSession:
         else:
             self.sg.calls.append((json['command'], json['linkedXboxId']))
         payload = self.replies.pop(0) if self.replies else {'status': {'errorCode': 'OK'}}
-        return _FakeResponse(payload)
+        return payload if isinstance(payload, _FakeResponse) else _FakeResponse(payload)
 
 
 class XboxTargetTests(unittest.TestCase):
@@ -164,15 +164,15 @@ class XboxRobustnessTests(unittest.TestCase):
                                     ('TurnOff', 'AAAA'), ('launch', 'AAAA', 'app.one')])
 
     def test_http_error_on_the_command_is_a_failure(self):
+        """A 5xx from Live goes through _send's own raise_for_status."""
         sg = self._client([])
-        sg_session = sg  # the fake stays in place; only the POST fails
-
-        async def boom(*a, **k):
-            raise RuntimeError('HTTP 503')
-        with mock.patch.object(xb, '_send', boom), self.assertLogs(xb.logger, level='ERROR') as cm:
+        session = xb._get_authenticated_client  # patched by _client; grab the fake session via a call
+        client = asyncio.run(session())
+        client.session.replies = [_FakeResponse({'status': {'errorCode': 'OK'}}, status=503)]
+        with self.assertLogs(xb.logger, level='ERROR') as cm:
             self.assertFalse(asyncio.run(xb.power_on()))
         self.assertTrue(any('HTTP 503' in m for m in cm.output))
-        self.assertEqual(sg_session.calls, [])
+        self.assertEqual(sg.calls, [('WakeUp', 'AAAA')])
 
     def test_corrupt_token_file_is_a_logged_failure_not_a_crash(self):
         import os
