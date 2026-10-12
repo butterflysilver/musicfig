@@ -130,30 +130,45 @@ a sensor: it knows which mesh node it hangs off, how strong the link is, what
 the network watchdog has seen, and what answers on its LAN. The installer adds
 `musicfig-network.timer` (4 minutes after boot, then every 5 minutes), which
 runs `musicfig-network.service` as the unprivileged `musicfig` user (plus the
-`systemd-journal` group, so it can read the watchdog's journal; `ping` carries
-`cap_net_raw`, `ip neigh` and `nmcli` are read-only). Root never executes the
+`systemd-journal` group, so it can read the watchdog's journal; unprivileged
+`ping` works on Raspberry Pi OS (`ping_group_range` sysctl / file caps),
+`ip neigh` and `nmcli` are read-only). Root never executes the
 `musicfig`-owned venv.
 
 * Enabled by the same `/etc/musicfig/pad-report.key` as the Figures page;
   without the file the service exits 0 and logs "network reporting is not set
   up here".
 * What is sent: `self` (ip, mac, uptime, the Wi-Fi link's ssid / bssid /
-  channel / freq_mhz / signal_pct from `nmcli`, and the watchdog's current
-  failure count, number of "netwatch:" lines this boot and the last one) and
-  `lan`: after a `ping -c1 -W1` of every host in the pad's own /24 (bounded at
-  ~6 s, never any other subnet), every `ip -4 neigh` row with a MAC in state
-  REACHABLE / STALE / DELAY / PROBE, plus an mDNS `name` from
-  `avahi-resolve-address` where it is installed and answers within a 5 s
-  total budget. The pad itself is left out of `lan`; the list is capped at
-  512 rows. Nothing else - no hostnames the pad did not see itself.
+  channel / freq_mhz / signal_pct from NetworkManager's last scan - `nmcli
+  --rescan no`, so the report never triggers a scan - and the watchdog's
+  current failure count, number of "netwatch:" lines this boot and the last
+  one) and `lan`: after a `ping -c1 -W1` of every host in the pad's own /24
+  (bounded at ~6 s, never any other subnet), every `ip -4 neigh` row on that
+  /24 with a MAC in state REACHABLE / STALE / DELAY / PROBE - other subnets
+  (docker bridges, VPNs) are ignored and a device learned on two interfaces
+  is one row with its best state - plus an mDNS `name` from one batched
+  `avahi-resolve-address` call where it is installed, bounded at 5 s in
+  total (the names that arrived in time are kept, the rest stay nameless;
+  names are cut to 63 characters). The pad itself is left out of `lan`; the
+  list is capped at 512 rows. Nothing else - no hostnames the pad did not
+  see itself.
 * A missing tool (`nmcli`, `ip`, `avahi-resolve-address`, `journalctl`) or a
-  timeout never fails the report: that piece is null / empty.
+  timeout never fails the report: that piece is null / empty, and
+  `--dry-run` logs why.
 * The figure report's secret guard runs on this payload too, although nothing
-  in it can carry a credential.
-* Check: `sudo -u musicfig /opt/musicfig/.venv/bin/python
-  /opt/musicfig/scripts/report_network.py --dry-run` prints the payload
-  (`--no-sweep` skips the pings); `journalctl -u musicfig-network` shows the
-  sends.
+  in it can carry a credential; a neighbour's name it dislikes is dropped,
+  not a reason to refuse the whole report.
+* Check: the faithful dry run is the unit's own identity, because `sudo -u
+  musicfig` cannot add the `systemd-journal` group (so the netwatch part
+  would read as zeros):
+
+  ```
+  sudo systemd-run -p User=musicfig -p Group=musicfig -p SupplementaryGroups=systemd-journal \
+    --wait --pipe /opt/musicfig/.venv/bin/python /opt/musicfig/scripts/report_network.py --dry-run
+  ```
+
+  `--no-sweep` skips the pings; an unknown flag exits 2 without sending;
+  `journalctl -u musicfig-network` shows the sends.
 
 ## Network watchdog
 

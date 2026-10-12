@@ -13,16 +13,19 @@ figure report runs (scripts/report_pad.py) runs anyway: secret-looking keys
 are stripped and the script refuses to send a payload that still holds one.
 
 Every external command goes through _run(), which returns "" on any failure
-(missing binary, timeout, non-zero exit), so a Pi that lacks a tool - or a
-laptop with none of them - reports nulls and an empty LAN instead of crashing.
-The pad itself is dropped from `lan` (it is `self`); the list is sorted by IP
-and capped at MAX_LAN rows. The sweep never touches anything but the one /24
-the pad's own address sits in.
+(missing binary, timeout, non-zero exit) and logs the reason at debug level,
+so a Pi that lacks a tool - or a laptop with none of them - reports nulls and
+an empty LAN instead of crashing, and --dry-run says why each null is null.
+`lan` holds only the pad's own /24 (docker bridges and other subnets in the
+neighbour table are ignored), without the pad itself (it is `self`), one row
+per (ip, mac) with the best neighbour state, sorted by IP and capped at
+MAX_LAN rows. The sweep never touches anything but that one /24.
 
 Usage:
     report_network.py             send (exit 0 on success, 1 on failure)
     report_network.py --dry-run   print the payload instead of sending it
     report_network.py --no-sweep  skip the ping sweep (neighbour table only)
+    (an unknown flag exits 2 without sending anything)
 
 Environment (musicfig-network.service sets the same ones musicfig-report
 uses): MUSICFIG_ROOM (default: the hostname), MUSICFIG_NETWORK_REPORT_URL
@@ -30,6 +33,7 @@ uses): MUSICFIG_ROOM (default: the hostname), MUSICFIG_NETWORK_REPORT_URL
 MUSICFIG_REPORT_KEY_FILE (default /etc/musicfig/pad-report.key; no file =
 reporting is not set up on this pad, exit 0 quietly).
 """
+import argparse
 import importlib.util
 import json
 import logging
@@ -71,28 +75,44 @@ TIMEOUT_S = 20
 RETRIES = 3
 
 WIFI_IFACE = 'wlan0'
-NMCLI_WIFI = ['nmcli', '-t', '-f', 'ACTIVE,SSID,BSSID,CHAN,FREQ,SIGNAL', 'dev', 'wifi']
-# Neighbour states that mean "we saw this MAC answer"; FAILED / INCOMPLETE
-# rows are addresses nobody answered for and carry no lladdr anyway.
-NEIGH_STATES = ('REACHABLE', 'STALE', 'DELAY', 'PROBE')
+# --rescan no: read NetworkManager's last scan instead of triggering one
+# every 5 minutes (a scan drops the link for a moment on some chips).
+NMCLI_WIFI = ['nmcli', '-t', '-f', 'ACTIVE,SSID,BSSID,CHAN,FREQ,SIGNAL', 'dev', 'wifi', 'list', '--rescan', 'no']
+# Neighbour states that mean "we saw this MAC answer", best first; FAILED /
+# INCOMPLETE rows are addresses nobody answered for and carry no lladdr anyway.
+NEIGH_STATES = ('REACHABLE', 'DELAY', 'PROBE', 'STALE')
 SWEEP_WORKERS = 64
 SWEEP_CAP_S = 6
 RESOLVE_CAP_S = 5
-RESOLVE_EACH_S = 2
 MAX_LAN = 512
+MAX_NAME_LEN = 63
 
 
-def _run(cmd, timeout=5) -> str:
+def _text(value) -> str:
+    return value if isinstance(value, str) else ''
+
+
+def _run(cmd, timeout=5, keep_partial=False) -> str:
     """stdout of `cmd`, or "" on any failure: missing binary, timeout,
     non-zero exit. Nothing in this script may crash because a tool is
-    absent; a missing piece just becomes null / empty in the payload."""
+    absent; a missing piece just becomes null / empty in the payload, and
+    the reason goes to the debug log (--dry-run shows it).
+
+    keep_partial=True returns whatever stdout arrived before a timeout or a
+    non-zero exit instead of "": for a batch lookup whose hits are each a
+    line and whose misses only cost the exit status."""
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except subprocess.TimeoutExpired as e:
+        logger.debug('%s: timed out after %ss', cmd[0], timeout)
+        return _text(e.stdout) if keep_partial else ''
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        logger.debug('%s: %s', cmd[0], e.__class__.__name__)
         return ''
     if out.returncode != 0:
-        return ''
-    return out.stdout or ''
+        logger.debug('%s: exit %d %s', cmd[0], out.returncode, _text(out.stderr)[:200].strip())
+        return _text(out.stdout) if keep_partial else ''
+    return _text(out.stdout)
 
 
 def _int(text) -> Optional[int]:
@@ -192,7 +212,8 @@ def read_uptime_s(path: str = None) -> Optional[int]:
     try:
         with open(path or UPTIME_FILE, 'r', encoding='utf-8') as f:
             return int(float(f.read().split()[0]))
-    except (OSError, ValueError, IndexError):
+    except (OSError, ValueError, IndexError) as e:
+        logger.debug('%s: %s', path or UPTIME_FILE, e.__class__.__name__)
         return None
 
 
@@ -205,7 +226,8 @@ def netwatch_status(failures_file: str = None, journal: str = None) -> dict:
         with open(failures_file or NETWATCH_FAILURES_FILE, 'r', encoding='utf-8') as f:
             digits = ''.join(ch for ch in f.read() if ch.isdigit())
         failures = int(digits) if digits else 0
-    except (OSError, ValueError):
+    except (OSError, ValueError) as e:
+        logger.debug('%s: %s (failures_now = 0)', failures_file or NETWATCH_FAILURES_FILE, e.__class__.__name__)
         failures = 0
     if journal is None:
         journal = _run(['journalctl', '-u', 'musicfig-netwatch', '-b', '-o', 'cat'], timeout=10)
@@ -256,28 +278,35 @@ def parse_neigh(text: str) -> list:
     return devices
 
 
-def _ip_key(device: dict):
+def _device_key(device: dict):
+    """Sort key: by address, then best neighbour state first, so a device
+    the kernel saw on two interfaces keeps its most alive row when deduped."""
     parts = device['ip'].split('.')
-    return tuple(int(p) if p.isdigit() else 0 for p in parts)
+    return (tuple(int(p) if p.isdigit() else 0 for p in parts), NEIGH_STATES.index(device['state']))
 
 
-def avahi_name(ip: str, timeout: float) -> Optional[str]:
-    out = _run(['avahi-resolve-address', '-4', ip], timeout=max(0.1, min(RESOLVE_EACH_S, timeout)))
-    parts = out.split()
-    return parts[1] if len(parts) >= 2 else None
+def avahi_names(ips: list, timeout: float = RESOLVE_CAP_S) -> dict:
+    """{ip: mDNS name} from ONE `avahi-resolve-address -4 ip ip ...`: avahi
+    resolves them all in parallel, prints a `ip<TAB>name` line per hit and
+    exits non-zero for the misses, so the hits are kept whatever the exit
+    status and whatever arrived before the cap is kept on a timeout."""
+    if not ips:
+        return {}
+    out = _run(['avahi-resolve-address', '-4', *ips], timeout=timeout, keep_partial=True)
+    names = {}
+    for line in out.splitlines():
+        parts = line.split('\t') if '\t' in line else line.split()
+        if len(parts) >= 2 and parts[0].strip() and parts[1].strip():
+            names.setdefault(parts[0].strip(), parts[1].strip())
+    return names
 
 
-def resolve_names(devices: list, resolver: Callable[[str, float], Optional[str]],
-                  cap_s: float = RESOLVE_CAP_S, clock: Callable[[], float] = time.monotonic) -> list:
-    """Add `name` to each device the resolver knows, in place, until cap_s of
-    wall time has gone: the remainder stay nameless rather than hold the
-    report. Each call gets at most the time left before the cap."""
-    deadline = clock() + cap_s
+def resolve_names(devices: list, lookup: Callable[[list], dict] = avahi_names) -> list:
+    """Add `name` to each device the lookup knows, in place; the rest stay
+    nameless rather than hold the report."""
+    names = lookup([d['ip'] for d in devices])
     for device in devices:
-        remaining = deadline - clock()
-        if remaining <= 0:
-            break
-        name = resolver(device['ip'], remaining)
+        name = names.get(device['ip'])
         if name:
             device['name'] = name
     return devices
@@ -286,35 +315,70 @@ def resolve_names(devices: list, resolver: Callable[[str, float], Optional[str]]
 def collect_self() -> dict:
     iface, ip = self_interface(_run(['ip', '-4', '-o', 'addr', 'show']),
                                _run(['ip', '-4', 'route', 'show', 'default']))
+    # Ask about wlan0 alone when that is the link; a Pi without one (or on
+    # Ethernet) gets the unfiltered list, which still has the ACTIVE row.
+    wifi_cmd = NMCLI_WIFI + (['ifname', WIFI_IFACE] if iface == WIFI_IFACE else [])
     return {
         'ip': ip,
         'mac': iface_mac(_run(['ip', 'link', 'show']), iface),
         'uptime_s': read_uptime_s(),
-        'link': parse_wifi(_run(NMCLI_WIFI, timeout=10)),
+        'link': parse_wifi(_run(wifi_cmd, timeout=10)),
         'netwatch': netwatch_status(),
     }
 
 
 def collect_lan(self_ip: Optional[str], self_mac: Optional[str], sweep: bool = True) -> list:
+    """The devices on the pad's own /24 and nothing else: a Pi with docker
+    bridges or a second NIC has neighbour rows for other subnets, and a LAN
+    device learned on two interfaces appears once per interface, so rows
+    are kept to the pad's /24 and deduped on (ip, mac), best state first.
+    Rows are not filtered by interface on purpose - on a dual-homed Pi the
+    sweep's answers can land on the other NIC's neighbour table."""
     base = subnet_base(self_ip) if self_ip else None
-    if sweep and base:
+    if not base:
+        return []
+    if sweep:
         ping_sweep(base)
     devices = [d for d in parse_neigh(_run(['ip', '-4', 'neigh']))
-               if d['ip'] != self_ip and d['mac'] != self_mac]
-    devices.sort(key=_ip_key)
-    devices = devices[:MAX_LAN]
+               if subnet_base(d['ip']) == base and d['ip'] != self_ip and d['mac'] != self_mac]
+    devices.sort(key=_device_key)
+    seen, unique = set(), []
+    for device in devices:
+        if (device['ip'], device['mac']) not in seen:
+            seen.add((device['ip'], device['mac']))
+            unique.append(device)
+    devices = unique[:MAX_LAN]
     if devices and shutil.which('avahi-resolve-address'):
-        resolve_names(devices, avahi_name)
+        resolve_names(devices)
     return devices
 
 
+def _safe_name(name) -> Optional[str]:
+    """An mDNS name the guard will accept: cut to MAX_NAME_LEN (one DNS
+    label), and dropped rather than refused if it still looks like a blob -
+    one odd hostname must not make the pad exit 1 every 5 minutes."""
+    name = str(name)[:MAX_NAME_LEN]
+    if not name or find_secret_keys(name):
+        logger.debug('dropping a name the secret guard flagged')
+        return None
+    return name
+
+
 def build_payload(room: str, host: str, self_info: dict, lan: list, now: Optional[datetime] = None) -> dict:
+    lan = strip_secrets(lan)
+    for device in lan:
+        if isinstance(device, dict) and 'name' in device:
+            name = _safe_name(device['name'])
+            if name:
+                device['name'] = name
+            else:
+                del device['name']
     payload = {
         'room': room,
         'host': host,
         'reported_at': (now or datetime.now(timezone.utc)).isoformat(timespec='seconds'),
         'self': strip_secrets(self_info),
-        'lan': strip_secrets(lan),
+        'lan': lan,
     }
     leaked = find_secret_keys(payload)
     if leaked:
@@ -345,10 +409,12 @@ def send(payload: dict, url: str, key: str) -> bool:
 
 
 def main(argv=None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-    dry_run = '--dry-run' in argv
-    sweep = '--no-sweep' not in argv
+    parser = argparse.ArgumentParser(description='Report this pad\'s view of the network to gsd-cloud.')
+    parser.add_argument('--dry-run', action='store_true', help='print the payload (with why each null is null) instead of sending it')
+    parser.add_argument('--no-sweep', action='store_true', help='skip the ping sweep; neighbour table only')
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)  # an unknown flag exits 2, never sends
+    dry_run, sweep = args.dry_run, not args.no_sweep
+    logging.basicConfig(level=logging.DEBUG if dry_run else logging.INFO, format='%(message)s')
     key_file = os.environ.get('MUSICFIG_REPORT_KEY_FILE') or DEFAULT_KEY_FILE
     try:
         key = read_key(key_file)

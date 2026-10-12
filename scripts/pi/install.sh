@@ -265,9 +265,10 @@ chmod 0644 /etc/systemd/system/musicfig-netwatch.{service,timer}
 # page) every 5 minutes. Same key file as the figure report, so it is just
 # as quiet on a pad that is not reporting. Runs as the service user, never
 # root (it executes the ${SVC_USER}-owned venv, which is exactly why netwatch
-# is copied out of the checkout): ping carries cap_net_raw, `ip neigh` and
-# `nmcli` are read-only, the watchdog's counter dir is 0755, and the
-# systemd-journal group covers `journalctl -u musicfig-netwatch`.
+# is copied out of the checkout): unprivileged ping works on Raspberry Pi OS
+# (ping_group_range sysctl / file caps), `ip neigh` and `nmcli` are
+# read-only, the watchdog's counter dir is 0755, and the systemd-journal
+# group covers `journalctl -u musicfig-netwatch`.
 log "Writing musicfig-network units..."
 cat > /etc/systemd/system/musicfig-network.service <<UNIT
 [Unit]
@@ -348,8 +349,10 @@ cat <<HINTS
       journalctl -u musicfig-netwatch -g 'netwatch:'    # every blip and what was done about it
   Network page (optional): with the same ${CONF_DIR}/pad-report.key in place
     the pad also reports its Wi-Fi link, the watchdog's state and the devices
-    on its /24 to gsd-cloud every 5 minutes; check with
-      sudo -u ${SVC_USER} ${VENV_DIR}/bin/python ${APP_DIR}/scripts/report_network.py --dry-run
+    on its /24 to gsd-cloud every 5 minutes; check with (sudo -u alone cannot
+    add the systemd-journal group, so the netwatch part would read as zeros)
+      sudo systemd-run -p User=${SVC_USER} -p Group=${SVC_USER} -p SupplementaryGroups=systemd-journal \\
+        --wait --pipe ${VENV_DIR}/bin/python ${APP_DIR}/scripts/report_network.py --dry-run
       journalctl -u musicfig-network
 
 HINTS

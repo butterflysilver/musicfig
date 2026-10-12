@@ -59,7 +59,7 @@ def fake_run(outputs):
     """A _run that answers from {tool: stdout} - `ip` keyed by its object
     (addr / route / link / neigh) - and "" for anything else, like the real
     one does for a tool that is not there."""
-    def run(cmd, timeout=5):
+    def run(cmd, timeout=5, **_kw):
         key = cmd[0]
         if key == 'ip':
             key = next(w for w in cmd[1:] if not w.startswith('-'))
@@ -81,6 +81,22 @@ class WifiParseTests(unittest.TestCase):
         self.assertIsNone(rn.parse_wifi(inactive))
         self.assertIsNone(rn.parse_wifi(''))
         self.assertIsNone(rn.parse_wifi('garbage\nno:x\n'))
+
+    def test_nmcli_reads_the_last_scan_for_wlan0_or_every_device_without_one(self):
+        with mock.patch.object(rn, '_run', side_effect=fake_run(ALL_TOOLS)) as run, \
+                mock.patch.object(rn, 'read_uptime_s', return_value=None):
+            rn.collect_self()
+        nmcli = [c.args[0] for c in run.call_args_list if c.args[0][0] == 'nmcli']
+        self.assertEqual(nmcli, [['nmcli', '-t', '-f', 'ACTIVE,SSID,BSSID,CHAN,FREQ,SIGNAL', 'dev', 'wifi', 'list',
+                                  '--rescan', 'no', 'ifname', 'wlan0']])
+        wired = dict(ALL_TOOLS, addr='2: eth0    inet 10.0.0.5/24 brd 10.0.0.255 scope global eth0\n',
+                     route='default via 10.0.0.1 dev eth0 proto dhcp\n')
+        with mock.patch.object(rn, '_run', side_effect=fake_run(wired)) as run, \
+                mock.patch.object(rn, 'read_uptime_s', return_value=None):
+            rn.collect_self()
+        nmcli = [c.args[0] for c in run.call_args_list if c.args[0][0] == 'nmcli']
+        self.assertEqual(nmcli[0][-2:], ['--rescan', 'no'])
+        self.assertNotIn('ifname', nmcli[0])
 
     def test_ssid_with_a_colon_survives(self):
         link = rn.parse_wifi('yes:Cafe\\: Upstairs:AA\\:BB\\:CC\\:DD\\:EE\\:FF:6:2437 MHz:50\n')
@@ -151,34 +167,68 @@ class LanTests(unittest.TestCase):
             lan = rn.collect_lan('192.168.0.104', 'd8:3a:dd:aa:bb:cc', sweep=False)
         self.assertEqual([d['ip'] for d in lan], ['192.168.0.1', '192.168.0.3', '192.168.0.7', '192.168.0.23', '192.168.0.24'])
         self.assertTrue(all('name' not in d for d in lan))
-        many = ''.join(f'10.0.{n // 256}.{n % 256} dev eth0 lladdr 02:00:00:00:{n // 256:02x}:{n % 256:02x} STALE\n'
-                       for n in range(1, 700))
+        # a /24 can never hold more than 254 rows; the cap is belt and braces
+        # against a neighbour table that lies (same ip, many macs)
+        many = ''.join(f'10.0.0.{n % 254 + 1} dev eth0 lladdr 02:00:00:00:{n // 256:02x}:{n % 256:02x} STALE\n'
+                       for n in range(0, 700))
         with mock.patch.object(rn, '_run', side_effect=fake_run({'neigh': many})), \
                 mock.patch.object(rn.shutil, 'which', return_value=None):
-            self.assertEqual(len(rn.collect_lan('10.0.0.1', None, sweep=False)), rn.MAX_LAN)
+            self.assertEqual(len(rn.collect_lan('10.0.0.200', None, sweep=False)), rn.MAX_LAN)
+        # no address of our own = no /24 to report, whatever the table holds
+        with mock.patch.object(rn, '_run', side_effect=fake_run({'neigh': NEIGH})):
+            self.assertEqual(rn.collect_lan(None, None, sweep=False), [])
 
-    def test_name_lookups_stop_at_the_time_cap(self):
-        """A resolver that costs 2 s per call against a 5 s cap names the
-        first three devices; the rest are left nameless, not waited for."""
-        clock = {'t': 0.0}
-        asked = []
+    def test_collect_lan_keeps_only_the_pads_slash_24_and_one_row_per_device(self):
+        """A dual-homed Pi with docker: 172.17.0.x containers and 10.x rows
+        are not house devices, and a LAN device learned on both eth0 and
+        wlan0 is one device, reported with its most alive state."""
+        neigh = (
+            '172.17.0.2 dev docker0 lladdr 02:42:ac:11:00:02 REACHABLE\n'
+            '10.8.0.1 dev tun0 lladdr 00:11:22:33:44:55 STALE\n'
+            '192.168.0.1 dev eth0 lladdr f0:70:84:2c:cb:60 STALE\n'
+            '192.168.0.1 dev wlan0 lladdr f0:70:84:2c:cb:60 REACHABLE\n'
+            '192.168.0.7 dev wlan0 lladdr aa:bb:cc:dd:ee:07 STALE\n'
+            '192.168.0.7 dev eth0 lladdr aa:bb:cc:dd:ee:07 STALE\n'
+            '192.168.0.146 dev wlan0 lladdr d8:3a:dd:00:01:46 REACHABLE\n'   # the Pi's own eth0, seen from wlan0
+            '192.168.0.147 dev eth0 lladdr d8:3a:dd:00:01:47 REACHABLE\n'    # the Pi's own wlan0, seen from eth0
+        )
+        with mock.patch.object(rn, '_run', side_effect=fake_run({'neigh': neigh})), \
+                mock.patch.object(rn.shutil, 'which', return_value=None):
+            lan = rn.collect_lan('192.168.0.147', 'd8:3a:dd:00:01:47', sweep=False)
+        self.assertEqual(lan, [
+            {'ip': '192.168.0.1', 'mac': 'f0:70:84:2c:cb:60', 'state': 'REACHABLE'},
+            {'ip': '192.168.0.7', 'mac': 'aa:bb:cc:dd:ee:07', 'state': 'STALE'},
+            {'ip': '192.168.0.146', 'mac': 'd8:3a:dd:00:01:46', 'state': 'REACHABLE'},
+        ])
 
-        def resolver(ip, remaining):
-            asked.append((ip, remaining))
-            clock['t'] += 2.0
-            return f'host-{ip.rsplit(".", 1)[1]}.local'
+    def test_names_come_from_one_batched_avahi_call_capped_as_a_whole(self):
+        """One avahi-resolve-address for every ip, bounded by RESOLVE_CAP_S
+        in total and keeping the lines that arrived; the ips it did not
+        answer for stay nameless rather than each cost their own timeout."""
         devices = [{'ip': f'192.168.0.{n}', 'mac': 'x', 'state': 'STALE'} for n in range(1, 7)]
-        rn.resolve_names(devices, resolver, cap_s=5, clock=lambda: clock['t'])
+        partial = '192.168.0.1\tgfiber.local\n192.168.0.3\tkitchen.local\n'
+        with mock.patch.object(rn, '_run', return_value=partial) as run:
+            rn.resolve_names(devices)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0], ['avahi-resolve-address', '-4'] + [d['ip'] for d in devices])
+        self.assertEqual(run.call_args.kwargs, {'timeout': rn.RESOLVE_CAP_S, 'keep_partial': True})
         self.assertEqual([d.get('name') for d in devices],
-                         ['host-1.local', 'host-2.local', 'host-3.local', None, None, None])
-        # each call is told how much of the cap is left, never more
-        self.assertEqual([r for _ip, r in asked], [5.0, 3.0, 1.0])
-
-    def test_avahi_output_and_absence(self):
-        with mock.patch.object(rn, '_run', return_value='192.168.0.7\tkitchen.local\n'):
-            self.assertEqual(rn.avahi_name('192.168.0.7', 5), 'kitchen.local')
+                         ['gfiber.local', None, 'kitchen.local', None, None, None])
+        # nothing came back (timed out before any line, or avahi absent) = nameless, not failed
         with mock.patch.object(rn, '_run', return_value=''):
-            self.assertIsNone(rn.avahi_name('192.168.0.7', 5))
+            self.assertEqual(rn.resolve_names([{'ip': '1.2.3.4', 'mac': 'x', 'state': 'STALE'}]),
+                             [{'ip': '1.2.3.4', 'mac': 'x', 'state': 'STALE'}])
+        self.assertEqual(rn.avahi_names([]), {})
+
+    def test_avahi_is_skipped_when_the_binary_is_absent(self):
+        with mock.patch.object(rn, '_run', side_effect=fake_run({'neigh': NEIGH})) as run, \
+                mock.patch.object(rn.shutil, 'which', return_value=None):
+            rn.collect_lan('192.168.0.104', None, sweep=False)
+        self.assertNotIn('avahi-resolve-address', [c.args[0][0] for c in run.call_args_list])
+        with mock.patch.object(rn, '_run', side_effect=fake_run({'neigh': NEIGH, 'avahi-resolve-address': '192.168.0.7\tkitchen.local\n'})), \
+                mock.patch.object(rn.shutil, 'which', return_value='/usr/bin/avahi-resolve-address'):
+            lan = rn.collect_lan('192.168.0.104', None, sweep=False)
+        self.assertEqual([d.get('name') for d in lan], [None, None, 'kitchen.local', None, None])
 
 
 class RunTests(unittest.TestCase):
@@ -191,6 +241,25 @@ class RunTests(unittest.TestCase):
     def test_non_zero_exit_is_empty_and_success_is_stdout(self):
         self.assertEqual(rn._run([sys.executable, '-c', 'print("x"); raise SystemExit(3)']), '')
         self.assertEqual(rn._run([sys.executable, '-c', 'print("ok")']).strip(), 'ok')
+
+    def test_failures_say_why_at_debug_level(self):
+        with self.assertLogs('report_network', level='DEBUG') as logs:
+            rn._run(['definitely-not-a-binary-on-this-box-xyz'])
+            rn._run([sys.executable, '-c', 'import sys; sys.stderr.write("boom"); raise SystemExit(3)'])
+            rn._run([sys.executable, '-c', 'import time; time.sleep(10)'], timeout=0.3)
+        self.assertIn('definitely-not-a-binary-on-this-box-xyz: FileNotFoundError', logs.output[0])
+        self.assertIn('exit 3 boom', logs.output[1])
+        self.assertIn('timed out after 0.3s', logs.output[2])
+
+    def test_keep_partial_keeps_what_arrived_before_a_timeout_or_a_bad_exit(self):
+        """A batch lookup prints a line per hit and exits non-zero for the
+        misses (or is still waiting on them at the cap): the hits count."""
+        hits_then_fail = 'import sys; print("1.2.3.4\\thit.local"); sys.exit(1)'
+        self.assertEqual(rn._run([sys.executable, '-c', hits_then_fail], keep_partial=True).strip(), '1.2.3.4\thit.local')
+        hits_then_hang = 'import sys, time; print("1.2.3.4\\thit.local", flush=True); time.sleep(10)'
+        self.assertEqual(rn._run([sys.executable, '-c', hits_then_hang], timeout=1, keep_partial=True).strip(),
+                         '1.2.3.4\thit.local')
+        self.assertEqual(rn._run([sys.executable, '-c', hits_then_fail]), '')
 
 
 class PayloadTests(unittest.TestCase):
@@ -231,7 +300,30 @@ class PayloadTests(unittest.TestCase):
         self.assertNotIn('api_key', p['self'])
         blob = 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamtsbW5vcA=='
         with self.assertRaises(ValueError):
-            rn.build_payload('r', 'h', self_info, [{'ip': '1.2.3.5', 'mac': 'aa', 'state': 'STALE', 'name': blob}], now=NOW)
+            rn.build_payload('r', 'h', dict(self_info, netwatch=dict(self_info['netwatch'], last_line=blob)), [], now=NOW)
+
+    def test_an_odd_mdns_name_is_cut_or_dropped_never_refused(self):
+        """A name the pad did not choose must not make it exit 1 every 5
+        minutes: long names are cut to one DNS label, blob-looking ones
+        dropped, and the device itself is still reported."""
+        self_info = {'ip': None, 'mac': None, 'uptime_s': None, 'link': None,
+                     'netwatch': {'failures_now': 0, 'blips_this_boot': 0, 'last_line': None}}
+        blob = 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamtsbW5vcA=='   # 68 chars, no dots
+        long_name = 'a-very-long-but-honest-printer-name-with-dashes-' + 'x' * 40 + '.local'
+        lan = [{'ip': '1.2.3.5', 'mac': 'aa', 'state': 'STALE', 'name': blob},
+               {'ip': '1.2.3.6', 'mac': 'ab', 'state': 'STALE', 'name': long_name},
+               {'ip': '1.2.3.7', 'mac': 'ac', 'state': 'STALE', 'name': 'kitchen.local'}]
+        p = rn.build_payload('r', 'h', self_info, lan, now=NOW)
+        # cut to 63 chars nothing is long enough to look like a blob to the shared guard (64+)
+        self.assertEqual([d.get('name') for d in p['lan']], [blob[:63], long_name[:63], 'kitchen.local'])
+        self.assertEqual([d['mac'] for d in p['lan']], ['aa', 'ab', 'ac'])
+        self.assertEqual(rn.find_secret_keys(p), [])
+        self.assertEqual(lan[0]['name'], blob)  # the caller's list is not touched
+        # and should the guard ever get stricter, a flagged name is dropped, not refused
+        stricter = lambda value, path='': ['<value>'] if value == blob[:63] else rn.report_pad.find_secret_keys(value, path)  # noqa: E731
+        with mock.patch.object(rn, 'find_secret_keys', side_effect=stricter):
+            p = rn.build_payload('r', 'h', self_info, lan, now=NOW)
+        self.assertEqual([d.get('name') for d in p['lan']], [None, long_name[:63], 'kitchen.local'])
 
 
 class _Reply:
@@ -299,6 +391,32 @@ class MainTests(unittest.TestCase):
         self.assertIn('"lan": []', out.getvalue())
         # no address = nothing to sweep, so ping is never run
         self.assertFalse(any(c.args[0][0] == 'ping' for c in run.call_args_list))
+
+    def test_unknown_flag_exits_2_and_sends_nothing(self):
+        with tempfile.NamedTemporaryFile('w', delete=False) as f:
+            f.write('the-key\n')
+        try:
+            with mock.patch.dict(os.environ, {'MUSICFIG_REPORT_KEY_FILE': f.name}), \
+                    mock.patch.object(rn, '_run', return_value='') as run, \
+                    mock.patch.object(rn.requests, 'post') as post, \
+                    mock.patch('sys.stderr', new=io.StringIO()):
+                with self.assertRaises(SystemExit) as exit_:
+                    rn.main(['--dry_run'])
+        finally:
+            os.unlink(f.name)
+        self.assertEqual(exit_.exception.code, 2)
+        post.assert_not_called()
+        run.assert_not_called()
+
+    def test_dry_run_logs_why_a_field_is_null(self):
+        env = {'MUSICFIG_REPORT_KEY_FILE': '/nonexistent/key', 'MUSICFIG_ROOM': 'kitchen'}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(rn.subprocess, 'run', side_effect=FileNotFoundError('no such tool')), \
+                mock.patch('sys.stdout', new=io.StringIO()), \
+                self.assertLogs('report_network', level='DEBUG') as logs:
+            self.assertEqual(rn.main(['--dry-run']), 0)
+        self.assertIn('nmcli: FileNotFoundError', '\n'.join(logs.output))
+        self.assertIn('journalctl: FileNotFoundError', '\n'.join(logs.output))
 
     def test_no_sweep_skips_the_pings_but_still_reads_neighbours(self):
         with mock.patch.object(rn, '_run', side_effect=fake_run(ALL_TOOLS)) as run, \
