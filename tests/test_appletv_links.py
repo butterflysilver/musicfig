@@ -233,6 +233,35 @@ class ConnectionCacheTests(unittest.TestCase):
         self.assertIn("close", fake.calls)
         appletv._atv = appletv._atv_loop = None
 
+    def test_stale_loop_close_does_not_wait_the_full_timeout(self):
+        """life-ops #125: a close task that hangs on the dead transport held
+        every lift/launch for the full 3 s; the stale path now drops it after
+        STALE_CLOSE_TIMEOUT."""
+        class HangingAtv(FakeAtv):
+            task = None
+
+            def close(self):
+                self.calls.append("close")
+                self.task = asyncio.create_task(asyncio.sleep(60))  # a Companion round trip that never answers
+                return {self.task}
+
+        fake = HangingAtv()
+        appletv._atv, appletv._atv_name = fake, "Living room"
+        appletv._atv_loop = object()
+
+        async def no_scan(timeout=5):
+            return []
+
+        async def run():
+            t0 = asyncio.get_running_loop().time()
+            with mock.patch.object(appletv, "scan_for_apple_tvs", no_scan):
+                await appletv.connect()
+            return asyncio.get_running_loop().time() - t0
+        elapsed = asyncio.run(run())
+        self.assertLess(elapsed, 1.5)
+        self.assertTrue(fake.task.done())  # cancelled, not left for shutdown to complain about
+        appletv._atv = appletv._atv_loop = None
+
     def test_close_quietly_edge_paths(self):
         async def run():
             class Raises:
