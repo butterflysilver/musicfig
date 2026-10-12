@@ -121,6 +121,38 @@ the tags file are exactly what musicfig uses.
   /opt/musicfig/scripts/report_pad.py --dry-run` prints the payload;
   `journalctl -u musicfig-report` shows the sends.
 
+## Network page (optional)
+
+`scripts/report_network.py` sends this pad's view of the house network to
+gsd-cloud (`POST /api/network/report`), which shows every device across every
+room and whether the mesh and the pads are healthy at `/network`. Each pad is
+a sensor: it knows which mesh node it hangs off, how strong the link is, what
+the network watchdog has seen, and what answers on its LAN. The installer adds
+`musicfig-network.timer` (4 minutes after boot, then every 5 minutes), which
+runs `musicfig-network.service` as root (reading the watchdog's journal needs
+it; the sweep and `ip neigh` would not).
+
+* Enabled by the same `/etc/musicfig/pad-report.key` as the Figures page;
+  without the file the service exits 0 and logs "network reporting is not set
+  up here".
+* What is sent: `self` (ip, mac, uptime, the Wi-Fi link's ssid / bssid /
+  channel / freq_mhz / signal_pct from `nmcli`, and the watchdog's current
+  failure count, number of "netwatch:" lines this boot and the last one) and
+  `lan`: after a `ping -c1 -W1` of every host in the pad's own /24 (bounded at
+  ~6 s, never any other subnet), every `ip -4 neigh` row with a MAC in state
+  REACHABLE / STALE / DELAY / PROBE, plus an mDNS `name` from
+  `avahi-resolve-address` where it is installed and answers within a 5 s
+  total budget. The pad itself is left out of `lan`; the list is capped at
+  512 rows. Nothing else - no hostnames the pad did not see itself.
+* A missing tool (`nmcli`, `ip`, `avahi-resolve-address`, `journalctl`) or a
+  timeout never fails the report: that piece is null / empty.
+* The figure report's secret guard runs on this payload too, although nothing
+  in it can carry a credential.
+* Check: `sudo /opt/musicfig/.venv/bin/python
+  /opt/musicfig/scripts/report_network.py --dry-run` prints the payload
+  (`--no-sweep` skips the pings); `journalctl -u musicfig-network` shows the
+  sends.
+
 ## Network watchdog
 
 A Pi 5's Wi-Fi chip occasionally wedges: the router still shows the Pi
