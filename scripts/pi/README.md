@@ -129,8 +129,10 @@ room and whether the mesh and the pads are healthy at `/network`. Each pad is
 a sensor: it knows which mesh node it hangs off, how strong the link is, what
 the network watchdog has seen, and what answers on its LAN. The installer adds
 `musicfig-network.timer` (4 minutes after boot, then every 5 minutes), which
-runs `musicfig-network.service` as root (reading the watchdog's journal needs
-it; the sweep and `ip neigh` would not).
+runs `musicfig-network.service` as the unprivileged `musicfig` user (plus the
+`systemd-journal` group, so it can read the watchdog's journal; `ping` carries
+`cap_net_raw`, `ip neigh` and `nmcli` are read-only). Root never executes the
+`musicfig`-owned venv.
 
 * Enabled by the same `/etc/musicfig/pad-report.key` as the Figures page;
   without the file the service exits 0 and logs "network reporting is not set
@@ -148,7 +150,7 @@ it; the sweep and `ip neigh` would not).
   timeout never fails the report: that piece is null / empty.
 * The figure report's secret guard runs on this payload too, although nothing
   in it can carry a credential.
-* Check: `sudo /opt/musicfig/.venv/bin/python
+* Check: `sudo -u musicfig /opt/musicfig/.venv/bin/python
   /opt/musicfig/scripts/report_network.py --dry-run` prints the payload
   (`--no-sweep` skips the pings); `journalctl -u musicfig-network` shows the
   sends.

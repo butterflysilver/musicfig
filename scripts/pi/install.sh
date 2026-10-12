@@ -263,9 +263,11 @@ chmod 0644 /etc/systemd/system/musicfig-netwatch.{service,timer}
 # Network report: this pad's view of the house network (its Wi-Fi link, the
 # watchdog's state, a ping sweep of its /24) goes to gsd-cloud (the Network
 # page) every 5 minutes. Same key file as the figure report, so it is just
-# as quiet on a pad that is not reporting. Runs as root like netwatch: the
-# sweep and `ip neigh` work unprivileged, but reading the watchdog's journal
-# (`journalctl -u`) needs root or the systemd-journal group.
+# as quiet on a pad that is not reporting. Runs as the service user, never
+# root (it executes the ${SVC_USER}-owned venv, which is exactly why netwatch
+# is copied out of the checkout): ping carries cap_net_raw, `ip neigh` and
+# `nmcli` are read-only, the watchdog's counter dir is 0755, and the
+# systemd-journal group covers `journalctl -u musicfig-netwatch`.
 log "Writing musicfig-network units..."
 cat > /etc/systemd/system/musicfig-network.service <<UNIT
 [Unit]
@@ -275,6 +277,9 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+User=${SVC_USER}
+Group=${SVC_USER}
+SupplementaryGroups=systemd-journal
 WorkingDirectory=${SVC_HOME}
 TimeoutStartSec=3min
 Environment=MUSICFIG_ROOM=$(hostname -s)
@@ -344,7 +349,7 @@ cat <<HINTS
   Network page (optional): with the same ${CONF_DIR}/pad-report.key in place
     the pad also reports its Wi-Fi link, the watchdog's state and the devices
     on its /24 to gsd-cloud every 5 minutes; check with
-      ${VENV_DIR}/bin/python ${APP_DIR}/scripts/report_network.py --dry-run
+      sudo -u ${SVC_USER} ${VENV_DIR}/bin/python ${APP_DIR}/scripts/report_network.py --dry-run
       journalctl -u musicfig-network
 
 HINTS
