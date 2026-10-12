@@ -146,6 +146,10 @@ class SecretTests(unittest.TestCase):
         f = rp.build_payload(tags, 'r', 'h', None, now=NOW)['figures'][0]
         self.assertEqual((f['action'], f['target']), ('command', 'curl'))
         self.assertNotIn('hunter2', str(f))
+        tags = {'identifier': {'a1': {'command': 'TOKEN=abc123 /usr/local/bin/notify --all'}}}
+        f = rp.build_payload(tags, 'r', 'h', None, now=NOW)['figures'][0]
+        self.assertEqual(f['target'], '/usr/local/bin/notify')
+        self.assertNotIn('abc123', str(f))
 
     def test_ordinary_values_pass_the_blob_check(self):
         tags = {'identifier': {'a1': {'name': 'Creeper', 'appletv_url':
@@ -227,16 +231,19 @@ class MainTests(unittest.TestCase):
             os.unlink(path)
         self.assertIn('not a musicfig tags file', logs.output[-1])
 
-    def test_title_lookups_stop_after_the_first_failure(self):
+    def test_title_lookups_stop_after_three_consecutive_misses_only(self):
         calls = []
+        answers = {'b': 'T'}
 
         def lookup(cid):
             calls.append(cid)
-            return None
+            return answers.get(cid)
         titles = rp._titles_until_first_failure(lookup)
-        self.assertIsNone(titles('a'))
-        self.assertIsNone(titles('b'))
-        self.assertEqual(calls, ['a'])
+        # one deleted card between two good ones does not blank the rest
+        self.assertEqual([titles(c) for c in ('a', 'b', 'a', 'b')], [None, 'T', None, 'T'])
+        # three misses in a row = the MCP is unreachable; stop asking
+        self.assertEqual([titles(c) for c in ('x', 'y', 'z', 'b')], [None, None, None, None])
+        self.assertEqual(calls, ['a', 'b', 'a', 'b', 'x', 'y', 'z'])
 
     def test_device_fallbacks_match_the_pad(self):
         tags = {'default_homepod': 'Office HomePod',

@@ -182,7 +182,8 @@ def figure_record(uid: str, entry, resolved_entry, resolved_tags: dict, titles) 
     if action == 'command':
         # A command line is run with shell=True on the pad and is the natural
         # place for an inline credential: ship the program name only.
-        rec['target'] = str(target).split()[0] if str(target).split() else None
+        words = [w for w in str(target).split() if '=' not in w]  # skip VAR=value prefixes
+        rec['target'] = words[0] if words else None
     else:
         rec['target'] = str(target) if not isinstance(target, bool) else None
     rec['device'] = _device_for(action, resolved_entry, resolved_tags)
@@ -246,17 +247,21 @@ def musicfig_version() -> Optional[str]:
         return None
 
 
+TITLE_LOOKUP_STRIKES = 3
+
+
 def _titles_until_first_failure(lookup):
-    """Wrap the Yoto title lookup so one unreachable MCP costs one timeout,
-    not one per card: after the first None every further card is None."""
-    state = {'dead': False}
+    """Wrap the Yoto title lookup so an unreachable MCP costs a few timeouts,
+    not one per card: after TITLE_LOOKUP_STRIKES consecutive misses every
+    further card is None. An isolated miss (one card deleted from the Yoto
+    library) resets on the next hit and does not blank the rest."""
+    state = {'misses': 0}
 
     def titles(card_id):
-        if state['dead']:
+        if state['misses'] >= TITLE_LOOKUP_STRIKES:
             return None
         title = lookup(card_id)
-        if title is None:
-            state['dead'] = True
+        state['misses'] = 0 if title is not None else state['misses'] + 1
         return title
     return titles
 
@@ -328,7 +333,7 @@ def main(argv=None) -> int:
         logger.error('%s', e)
         return 1
     except (AttributeError, TypeError) as e:
-        logger.error('report: %s is not a musicfig tags file (%s)', tags_file, e.__class__.__name__)
+        logger.error('report: %s is not a musicfig tags file (%s: %s)', tags_file, e.__class__.__name__, e)
         return 1
     if dry_run:
         print(json.dumps(payload, indent=2))
