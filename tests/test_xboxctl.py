@@ -2,6 +2,7 @@
 so a game-room figure never wakes the basement Xbox. Fake client, no network."""
 import asyncio
 import importlib.util
+import shutil
 import os
 import unittest
 from unittest import mock
@@ -17,7 +18,25 @@ class _Console:
         self.id, self.name = cid, name
 
 
+class _FakeResponse:
+    def __init__(self, payload, status=200):
+        self._payload, self.status_code = payload, status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError('HTTP %d' % self.status_code)
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError('no json')
+        return self._payload
+
+
 class _FakeSmartglass:
+    SG_URL = 'https://sg.test'
+    HEADERS_SG = {'x-xbl-contract-version': '4'}
+    _smartglass_session_id = 'sess'
+
     def __init__(self, consoles):
         self.consoles = consoles
         self.calls = []
@@ -26,24 +45,34 @@ class _FakeSmartglass:
         self.calls.append(('list',))
         return mock.Mock(result=self.consoles)
 
-    async def wake_up(self, cid):
-        self.calls.append(('wake', cid))
-
-    async def turn_off(self, cid):
-        self.calls.append(('off', cid))
-
-    async def launch_app(self, cid, app):
-        self.calls.append(('launch', cid, app))
-
     async def get_console_status(self, cid):
         self.calls.append(('status', cid))
         return {'id': cid}
 
 
+class _FakeSession:
+    """client.session: records every /commands POST on the smartglass fake as
+    (command, console[, product id]) and answers with the next queued Live reply
+    (default: delivered)."""
+    def __init__(self, sg):
+        self.sg = sg
+        self.replies = []
+
+    async def post(self, url, json=None, headers=None):
+        assert url == 'https://sg.test/commands' and headers == self.sg.HEADERS_SG
+        if json['command'] == 'ActivateApplicationWithOneStoreProductId':
+            self.sg.calls.append(('launch', json['linkedXboxId'], json['parameters'][0]['oneStoreProductId']))
+        else:
+            self.sg.calls.append((json['command'], json['linkedXboxId']))
+        payload = self.replies.pop(0) if self.replies else {'status': {'errorCode': 'OK'}}
+        return _FakeResponse(payload)
+
+
 class XboxTargetTests(unittest.TestCase):
     def setUp(self):
         self.sg = _FakeSmartglass([_Console('AAAA', 'Game Room Xbox'), _Console('BBBB', 'Basement Xbox')])
-        client = mock.Mock(smartglass=self.sg)
+        self.session = _FakeSession(self.sg)
+        client = mock.Mock(smartglass=self.sg, session=self.session)
 
         async def fake_client():
             return client
@@ -60,19 +89,19 @@ class XboxTargetTests(unittest.TestCase):
         self.assertTrue(self.run_(xb.launch_app('app.one')))
         self.assertTrue(self.run_(xb.power_off()))
         self.run_(xb.get_console_status())
-        self.assertEqual(self.sg.calls, [('wake', 'BBBB'), ('launch', 'BBBB', 'app.one'), ('off', 'BBBB'), ('status', 'BBBB')])
+        self.assertEqual(self.sg.calls, [('WakeUp', 'BBBB'), ('launch', 'BBBB', 'app.one'), ('TurnOff', 'BBBB'), ('status', 'BBBB')])
 
     def test_explicit_console_wins_over_the_configured_one(self):
         xb.load_config({'xbox_console_id': 'BBBB'})
         self.run_(xb.power_on('AAAA'))
         self.run_(xb.launch_app('app.one', 'AAAA'))
-        self.assertEqual(self.sg.calls, [('wake', 'AAAA'), ('launch', 'AAAA', 'app.one')])
+        self.assertEqual(self.sg.calls, [('WakeUp', 'AAAA'), ('launch', 'AAAA', 'app.one')])
 
     def test_no_console_anywhere_falls_back_to_the_account_list(self):
         xb.load_config({'xbox_client_id': 'c'})          # no xbox_console_id
         self.run_(xb.power_on())                          # wakes every console, as before
         self.run_(xb.launch_app('app.one'))               # first console
-        self.assertEqual(self.sg.calls, [('list',), ('wake', 'AAAA'), ('wake', 'BBBB'), ('list',), ('launch', 'AAAA', 'app.one')])
+        self.assertEqual(self.sg.calls, [('list',), ('WakeUp', 'AAAA'), ('WakeUp', 'BBBB'), ('list',), ('launch', 'AAAA', 'app.one')])
 
     def test_console_id_is_normalised(self):
         xb.load_config({'xbox_console_id': ' BBBB '})
@@ -86,7 +115,7 @@ class XboxTargetTests(unittest.TestCase):
         xb.load_config({'xbox_console_id': 'BBBB'})
         self.assertTrue(xb.sync_power_on())
         self.assertTrue(xb.sync_launch_app('app.one'))
-        self.assertEqual(self.sg.calls, [('wake', 'BBBB'), ('launch', 'BBBB', 'app.one')])
+        self.assertEqual(self.sg.calls, [('WakeUp', 'BBBB'), ('launch', 'BBBB', 'app.one')])
 
 
 if __name__ == '__main__':
@@ -102,42 +131,63 @@ class XboxRobustnessTests(unittest.TestCase):
         xb._config = {}
         xb._xbl_client = xb._http_client = None
 
-    def test_reply_validation_error_counts_as_sent_but_nothing_else_does(self):
-        from pydantic import BaseModel, ValidationError
-
-        class CommandResponse(BaseModel):
-            result: str
-
-        class Other(BaseModel):
-            result: str
-
-        try:
-            CommandResponse(result=None)
-        except ValidationError as e:
-            reply_error = e
-        try:
-            Other(result=None)
-        except ValidationError as e:
-            other_error = e
-        self.assertTrue(xb._command_was_sent(reply_error))
-        self.assertFalse(xb._command_was_sent(other_error))
-        self.assertFalse(xb._command_was_sent(RuntimeError('Event loop is closed')))
-
-    def test_power_on_reports_success_when_only_the_reply_was_unparseable(self):
-        from pydantic import BaseModel, ValidationError
-
-        class CommandResponse(BaseModel):
-            result: str
-
-        async def wake_up(cid):
-            CommandResponse(result=None)
-        client = mock.Mock(smartglass=mock.Mock(wake_up=wake_up))
+    def _client(self, replies):
+        sg = _FakeSmartglass([_Console('AAAA', 'Game Room Xbox')])
+        session = _FakeSession(sg)
+        session.replies = list(replies)
+        client = mock.Mock(smartglass=sg, session=session)
 
         async def fake_client():
             return client
-        with mock.patch.object(xb, '_get_authenticated_client', fake_client):
-            xb.load_config({'xbox_console_id': 'AAAA'})
-            self.assertTrue(asyncio.run(xb.power_on()))
+        mock.patch.object(xb, '_get_authenticated_client', fake_client).start()
+        self.addCleanup(mock.patch.stopall)
+        xb.load_config({'xbox_console_id': 'AAAA'})
+        return sg
+
+    def test_wake_is_a_failure_when_live_could_not_deliver_it(self):
+        """The 2026-10-12 case: HTTP 200, destination null, ErrorCallingWNS -
+        the console was shut down. Must read as a failure (red flash)."""
+        sg = self._client([{'destination': None, 'opId': 'x',
+                            'status': {'errorCode': 'ErrorCallingWNS', 'errorMessage': 'Send command failed'}}])
+        with self.assertLogs(xb.logger, level='ERROR') as cm:
+            self.assertFalse(asyncio.run(xb.power_on()))
+        self.assertTrue(any('ErrorCallingWNS' in m for m in cm.output))
+        self.assertEqual(sg.calls, [('WakeUp', 'AAAA')])
+
+    def test_commands_succeed_only_on_an_ok_status(self):
+        sg = self._client([{'status': {'errorCode': 'OK'}}, {'opId': 'x'}, None, {'status': {'errorCode': 'OK'}}])
+        self.assertTrue(asyncio.run(xb.power_on()))              # OK
+        self.assertFalse(asyncio.run(xb.launch_app('app.one')))  # no status at all
+        self.assertFalse(asyncio.run(xb.power_off()))            # not JSON
+        self.assertTrue(asyncio.run(xb.launch_app('app.one')))   # OK
+        self.assertEqual(sg.calls, [('WakeUp', 'AAAA'), ('launch', 'AAAA', 'app.one'),
+                                    ('TurnOff', 'AAAA'), ('launch', 'AAAA', 'app.one')])
+
+    def test_http_error_on_the_command_is_a_failure(self):
+        sg = self._client([])
+        sg_session = sg  # the fake stays in place; only the POST fails
+
+        async def boom(*a, **k):
+            raise RuntimeError('HTTP 503')
+        with mock.patch.object(xb, '_send', boom), self.assertLogs(xb.logger, level='ERROR') as cm:
+            self.assertFalse(asyncio.run(xb.power_on()))
+        self.assertTrue(any('HTTP 503' in m for m in cm.output))
+        self.assertEqual(sg_session.calls, [])
+
+    def test_corrupt_token_file_is_a_logged_failure_not_a_crash(self):
+        import os
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        token_file = os.path.join(tmp, 'xbox_tokens.json')
+        with open(token_file, 'w') as f:
+            f.write('{not json')
+        with mock.patch.object(xb, 'TOKEN_FILE', token_file), self.assertLogs(xb.logger, level='ERROR'):
+            self.assertIsNone(asyncio.run(xb._get_authenticated_client()))
+        with open(token_file, 'w') as f:
+            f.write('{"access_token": "a"}')   # no refresh_token
+        with mock.patch.object(xb, 'TOKEN_FILE', token_file), self.assertLogs(xb.logger, level='ERROR'):
+            self.assertIsNone(asyncio.run(xb._get_authenticated_client()))
 
     def test_run_forgets_the_cached_client_and_closes_it(self):
         closed = []
@@ -159,7 +209,11 @@ class XboxRobustnessTests(unittest.TestCase):
         import json, tempfile, os
         tmp = tempfile.mkdtemp()
         token_file = os.path.join(tmp, 'xbox_tokens.json')
-        json.dump({'access_token': 'old', 'refresh_token': 'r', 'client_id': 'c', 'user_id': 'u'}, open(token_file, 'w'))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        self.addCleanup(lambda: setattr(xb, '_xbl_client', None))
+        self.addCleanup(lambda: setattr(xb, '_http_client', None))
+        with open(token_file, 'w') as f:
+            json.dump({'access_token': 'old', 'refresh_token': 'r', 'client_id': 'c', 'user_id': 'u'}, f)
         calls = []
 
         class FakeMgr:
@@ -182,5 +236,5 @@ class XboxRobustnessTests(unittest.TestCase):
             xb.load_config({'xbox_client_id': 'c', 'xbox_client_secret': 's'})
             self.assertEqual(asyncio.run(xb._get_authenticated_client()), 'client')
         self.assertEqual(calls, ['refresh_oauth', ('refresh_tokens', 'new')])
-        self.assertEqual(json.load(open(token_file))['access_token'], 'new')
-        xb._xbl_client = xb._http_client = None
+        with open(token_file) as f:
+            self.assertEqual(json.load(f)['access_token'], 'new')

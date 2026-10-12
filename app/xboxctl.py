@@ -35,18 +35,35 @@ def load_config(tags: dict) -> None:
     logger.info("Xbox config loaded")
 
 
-def _command_was_sent(e: Exception) -> bool:
-    """xbox-webapi 2.1 parses Xbox Live's reply into a CommandResponse model
-    that the service has since outgrown; the HTTP call was already answered
-    200 by then, so a pydantic ValidationError means 'sent, reply not
-    understood' - not a failure. Anything else is a real one."""
+async def _send(client, device_id: str, command_type: str, command: str, params=None) -> bool:
+    """POST one SmartGlass command and judge it by Xbox Live's own verdict.
+    xbox-webapi 2.1 parses the reply into a model the service has outgrown
+    (a pydantic error) and, when it does parse, never looks at status.errorCode,
+    so a wake Live could not deliver (ErrorCallingWNS: the console is shut down,
+    offline, or not in Sleep) looked like success. The body mirrors the library's
+    _send_one_shot_command; only status.errorCode == OK counts as delivered."""
+    sg = client.smartglass
+    body = {
+        'destination': 'Xbox',
+        'type': command_type,
+        'command': command,
+        'sessionId': sg._smartglass_session_id,
+        'sourceId': 'com.microsoft.smartglass',
+        'parameters': params or [{}],
+        'linkedXboxId': device_id,
+    }
+    resp = await client.session.post(f'{sg.SG_URL}/commands', json=body, headers=sg.HEADERS_SG)
+    resp.raise_for_status()
     try:
-        from pydantic import ValidationError
-    except ImportError:  # pragma: no cover
+        status = (resp.json() or {}).get('status') or {}
+    except ValueError:
+        status = {}
+    code = status.get('errorCode')
+    if code != 'OK':
+        logger.error("Xbox %s/%s not delivered to %s: %s %s", command_type, command, device_id,
+                     code or 'no status in reply', status.get('errorMessage') or '')
         return False
-    # Only the REPLY model counts; a validation error while building a request
-    # would mean nothing was sent.
-    return isinstance(e, ValidationError) and getattr(e, 'title', '') == 'CommandResponse'
+    return True
 
 
 def _target(console_id: Optional[str]) -> Optional[str]:
@@ -76,8 +93,13 @@ async def _get_authenticated_client():
         logger.error("Xbox tokens not found. Run xbox_auth_debug.py first.")
         return None
 
-    with open(TOKEN_FILE, 'r') as f:
-        tokens = json.load(f)
+    try:
+        with open(TOKEN_FILE, 'r') as f:
+            tokens = json.load(f)
+        tokens['access_token'], tokens['refresh_token']
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        logger.error("Xbox token file %s is unreadable or incomplete (%s); sign in again", TOKEN_FILE, e.__class__.__name__)
+        return None
 
     client_id = tokens.get('client_id', _config.get('client_id', ''))
     client_secret = _config.get('client_secret', '')
@@ -158,7 +180,7 @@ async def get_consoles():
 
 
 async def power_on(console_id: str = None) -> bool:
-    """Power on an Xbox console."""
+    """Wake the pad's console (or, with none configured, every console on the account)."""
     client = await _get_authenticated_client()
     if not client:
         return False
@@ -166,19 +188,17 @@ async def power_on(console_id: str = None) -> bool:
     try:
         console_id = _target(console_id)
         if console_id:
-            await client.smartglass.wake_up(console_id)
+            targets = [console_id]
         else:
-            # No console configured or named: wake every console on the account
             logger.warning("xbox_console_id not set in tags.yml; waking every console on the account")
-            consoles = await get_consoles()
-            for console in consoles:
-                await client.smartglass.wake_up(console.id)
-        logger.info("Xbox power on command sent")
-        return True
+            targets = [c.id for c in await get_consoles()]
+        ok = False
+        for target in targets:
+            ok = await _send(client, target, 'Power', 'WakeUp') or ok
+        if ok:
+            logger.info("Xbox power on command delivered")
+        return ok
     except Exception as e:
-        if _command_was_sent(e):
-            logger.info("Xbox power on command sent (reply not understood by xbox-webapi; ignoring)")
-            return True
         logger.error(f"Failed to power on Xbox: {e}")
         return False
 
@@ -194,22 +214,19 @@ async def power_off(console_id: str = None) -> bool:
         if not target_id:
             consoles = await get_consoles()
             target_id = consoles[0].id if consoles else None
-
-        if target_id:
-            await client.smartglass.turn_off(target_id)
-            logger.info("Xbox power off command sent")
+        if not target_id:
+            return False
+        if await _send(client, target_id, 'Power', 'TurnOff'):
+            logger.info("Xbox power off command delivered")
             return True
         return False
     except Exception as e:
-        if _command_was_sent(e):
-            logger.info("Xbox power off command sent (reply not understood by xbox-webapi; ignoring)")
-            return True
         logger.error(f"Failed to power off Xbox: {e}")
         return False
 
 
 async def launch_app(app_id: str, console_id: str = None) -> bool:
-    """Launch an app/game on Xbox."""
+    """Launch an app/game (Microsoft Store product id) on Xbox."""
     client = await _get_authenticated_client()
     if not client:
         return False
@@ -219,17 +236,14 @@ async def launch_app(app_id: str, console_id: str = None) -> bool:
         if not target_id:
             consoles = await get_consoles()
             target_id = consoles[0].id if consoles else None
-
-        if target_id:
-            # Launch the app
-            await client.smartglass.launch_app(target_id, app_id)
+        if not target_id:
+            return False
+        if await _send(client, target_id, 'Shell', 'ActivateApplicationWithOneStoreProductId',
+                       [{'oneStoreProductId': app_id}]):
             logger.info(f"Launched app {app_id} on Xbox")
             return True
         return False
     except Exception as e:
-        if _command_was_sent(e):
-            logger.info("Xbox launch command sent (reply not understood by xbox-webapi; ignoring)")
-            return True
         logger.error(f"Failed to launch app: {e}")
         return False
 
