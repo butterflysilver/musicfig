@@ -7,6 +7,7 @@ Enables launching Disney+, Netflix, and other streaming content via deep links.
 import asyncio
 import re
 import logging
+import threading
 import time
 import http.client
 import ipaddress
@@ -33,6 +34,18 @@ logger = logging.getLogger(__name__)
 _atv = None
 _atv_name = None
 _atv_loop = None
+
+# One Apple TV action at a time, process-wide. Lift-to-pause runs on its own
+# thread (lego's appletv-pause) while launches run on the pad thread, each
+# under its own asyncio.run() over the cache above: the stale-loop check in
+# connect() cannot tell a finished loop from another thread's LIVE one, so a
+# pause and a launch in flight together could close each other's session
+# mid-command ("Open URL failed" right after a quick lift / re-place). Held
+# for the whole action, the previous action's loop has always finished by the
+# time the next one looks at the cache, and the only session it ever closes
+# is a dead one. A launch arriving during a pause waits exactly as long as
+# that pause still takes; it is never skipped.
+_action_lock = threading.Lock()
 
 # Configuration - set these in config.py or tags.yml
 APPLE_TV_NAME = None  # Will be auto-discovered if None
@@ -65,12 +78,25 @@ def _is_ip(value) -> bool:
         return False
 
 
+def _run_action(coro_factory):
+    """asyncio.run() one tag action's coroutine with the Apple TV to itself
+    (see _action_lock). Every sync entry point that touches the connection
+    cache goes through here; the lock is released however the action ends."""
+    if not _action_lock.acquire(blocking=False):
+        logger.info("Apple TV busy with another action; waiting for it to finish")
+        _action_lock.acquire()
+    try:
+        return asyncio.run(coro_factory())
+    finally:
+        _action_lock.release()
+
+
 def _guarded(label, coro_factory):
     """Run one tag action's coroutine; any exception is logged and becomes
     False. The pad loop has no try/except of its own and the service is
     Restart=always, so an escape here darkens every pad."""
     try:
-        return asyncio.run(coro_factory())
+        return _run_action(coro_factory)
     except Exception as e:
         logger.error(f"{label} failed: {e.__class__.__name__}: {e}")
         return False
@@ -448,7 +474,7 @@ async def cec_wake_async(atv_name=None, atv_ip=None):
 
 def turn_on():
     """Synchronous wrapper for turn_on_async()."""
-    return asyncio.run(turn_on_async())
+    return _run_action(turn_on_async)
 
 
 async def launch_app(url_or_bundle_id, atv_name=None, atv_ip=None):
@@ -515,7 +541,7 @@ def launch_disney(content_id, atv_name=None):
     else:
         url = f"https://www.disneyplus.com/video/{content_id}"
 
-    return asyncio.run(launch_app(url, atv_name=atv_name))
+    return _run_action(lambda: launch_app(url, atv_name=atv_name))
 
 
 def launch_netflix(content_id, atv_name=None):
@@ -525,7 +551,7 @@ def launch_netflix(content_id, atv_name=None):
     else:
         url = f"https://www.netflix.com/title/{content_id}"
 
-    return asyncio.run(launch_app(url, atv_name=atv_name))
+    return _run_action(lambda: launch_app(url, atv_name=atv_name))
 
 
 def youtube_deep_link(video):
@@ -691,7 +717,7 @@ def pause(atv_name=None):
     video was already paused by hand this resumes it; Apple exposes no
     pause-only command over Companion)."""
     try:
-        return asyncio.run(press_after_async(0, "play_pause", atv_name=atv_name))
+        return _run_action(lambda: press_after_async(0, "play_pause", atv_name=atv_name))
     except Exception as e:
         logger.error(f"Apple TV pause failed: {e}")
         return False
