@@ -42,6 +42,24 @@ _loop_lock = threading.Lock()
 _current = None  # concurrent.futures.Future of the running stream
 _current_lock = threading.Lock()
 
+# Called as on_playing(stream, True) once a stream is flowing and
+# on_playing(stream, False) when it ends, for whatever reason (played out,
+# stopped, failed). `stream` is a token unique to that stream: a replaced
+# stream's teardown can outlive stop()'s 5 s wait and report its end after
+# the next one started, and the token keeps that from counting against the
+# new one. app/lego.py plugs the network watchdog's playing marker in here;
+# a hook that raises never ends a stream.
+on_playing = None
+
+
+def _notify_playing(stream: object, playing: bool) -> None:
+    if on_playing is None:
+        return
+    try:
+        on_playing(stream, playing)
+    except Exception as e:
+        logger.warning(f"on_playing hook failed: {e}")
+
 
 def load_config(tags: dict) -> None:
     """Load HomePod configuration from tags.yml."""
@@ -234,6 +252,7 @@ async def _stream_sources_async(sources: list, target: str, started: threading.E
     other on a single connection. Sets `started` once the first one is
     flowing (ok[0] = True) or once it is clear it will not (ok[0] = False)."""
     atv = None
+    stream = object()   # this stream's token for on_playing
     try:
         usable = []
         for source in sources:
@@ -258,6 +277,7 @@ async def _stream_sources_async(sources: list, target: str, started: threading.E
             if index == 1:
                 ok[0] = True
                 started.set()
+                _notify_playing(stream, True)
             try:
                 await _play_source(atv, source)
                 failures = 0
@@ -284,6 +304,7 @@ async def _stream_sources_async(sources: list, target: str, started: threading.E
             except Exception:
                 pass
         started.set()
+        _notify_playing(stream, False)
 
 
 def stream_file(file_path: str, target: str = None) -> bool:
