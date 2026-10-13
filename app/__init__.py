@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+"""Musicfig Flask app. Importing this package starts the jukebox: app.spotify
+runs connectLego() at import, which starts the lego.Base pad thread (and its
+HomePod/Apple TV warm-up scans). Set MUSICFIG_NO_AUTOSTART=1 to import without
+starting that thread (tests/__init__.py does); unset, the default, it starts."""
 
 from app import webhook
 from flask import Flask, render_template
