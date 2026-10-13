@@ -347,10 +347,11 @@ cat <<HINTS
       journalctl -u musicfig-report
   Network watchdog: every 2 min the Pi pings its gateway; 2 misses bounce
     Wi-Fi, 4 misses reboot (never within 20 min of boot, doubling per
-    consecutive watchdog reboot up to 160 min; a good ping resets it). It
-    only reboots once 2 bounces have left the Wi-Fi link down (a wedged
-    chip); a link that is up with no gateway is a mesh/uplink fault, logged,
-    not rebooted for. A bounce waits (up to 3 cycles) while a figure plays
+    consecutive watchdog reboot up to 160 min; a good ping resets it). The
+    reboot waits until 2 bounces have left the Wi-Fi link down (a wedged
+    chip); a link that is up with no gateway looks like a mesh/uplink fault
+    and is logged as such - but only until 12 misses (24 min), then it
+    reboots regardless. A bounce waits (up to 3 cycles) while a figure plays
     (musicfig keeps /run/musicfig/playing while an MP3 or HomePod stream runs).
       journalctl -u musicfig-netwatch -g 'netwatch:'    # every blip this boot and what was done about it
       sudo cat ${SVC_HOME}/netwatch.log                  # bounces/reboots/recoveries, survives the reboot

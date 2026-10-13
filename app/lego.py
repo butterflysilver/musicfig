@@ -69,8 +69,9 @@ _playing_warned = False
 
 
 def set_playing(source, playing):
-    """Record that `source` ('mp3', 'homepod') started or stopped playing.
-    The marker exists while at least one source is playing."""
+    """Record that `source` started or stopped playing: 'mp3' for the local
+    player, ('homepod', <stream token>) per HomePod stream. The marker exists
+    while at least one source is playing."""
     global _playing_warned
     with _playing_lock:
         before = bool(_playing_sources)
@@ -92,9 +93,10 @@ def set_playing(source, playing):
 
 
 # A HomePod stream reports its own start and end (it can run out on its own
-# with the figure still on the pad); the local player's states come through
-# the monitor thread in Base.initMp3.
-homepod.on_playing = lambda playing: set_playing('homepod', playing)
+# with the figure still on the pad), keyed by its own token so a replaced
+# stream's late end cannot clear the marker under the one that replaced it;
+# the local player's states come through the monitor thread in Base.initMp3.
+homepod.on_playing = lambda stream, playing: set_playing(('homepod', stream), playing)
 
 
 class Dimensions():

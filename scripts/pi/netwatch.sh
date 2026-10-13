@@ -28,11 +28,15 @@
 #
 #   bounces     how many bounces in a row NetworkManager has not reported the
 #               link on IFACE back at "100 (connected)" afterwards. A reboot
-#               needs REBOOT_BOUNCES of them: a chip that will not reassociate
+#               wants REBOOT_BOUNCES of them: a chip that will not reassociate
 #               is the wedge a reboot clears, while a link that is up with a
-#               gateway that still does not answer is the mesh extender or
-#               the router's uplink being down - logged as such, never
-#               rebooted for, because a reboot cannot fix it.
+#               gateway that still does not answer looks like the mesh
+#               extender or the router's uplink being down, which a reboot
+#               cannot fix. Both only DEFER the reboot, to HARD_REBOOT_AT
+#               misses: a wedged chip that still reports "connected" (the
+#               router listed the Pi as online through the 2026-10-12 wedges)
+#               must not hold the reboot back forever. The uptime backoff
+#               still applies to the forced reboot.
 #   deferrals   bounces put off because musicfig was mid-playback (a local
 #               MP3 or a HomePod stream on the same extender plays fine
 #               without the gateway; the bounce, and the reboot behind it,
@@ -78,6 +82,9 @@ MIN_UPTIME_S="${NETWATCH_MIN_UPTIME:-1200}"
 MAX_BACKOFF=8
 REBOOT_BOUNCES=2
 MAX_DEFERRALS=3
+# 12 misses (24 min) by default: room for two bounces even when each one
+# waits out its MAX_DEFERRALS cycles of playback first.
+HARD_REBOOT_AT=$((REBOOT_AT * 3))
 LOG_KEEP=500
 LOG_TRIM_AT=600
 PING_COUNT=3
@@ -194,8 +201,8 @@ if [[ "${reachable}" -eq 1 ]]; then
         remember_reboots 0
     fi
     remember 0
-    [[ "${bounces}" -gt 0 ]] && remember_bounces 0
-    [[ "${deferrals}" -gt 0 ]] && remember_deferrals 0
+    if [[ "${bounces}" -gt 0 ]]; then remember_bounces 0; fi
+    if [[ "${deferrals}" -gt 0 ]]; then remember_deferrals 0; fi
     exit 0
 fi
 
@@ -203,13 +210,16 @@ failures=$((failures + 1))
 remember "${failures}"
 log "cannot reach ${target:-the gateway} (consecutive failures: ${failures})"
 
-# A link that is back up after a bounce means the chip is fine; the bounces
-# that got it there no longer count towards a reboot.
+# A link that is back up after a bounce means the chip reassociated; the
+# bounces that got it there no longer count towards a reboot. Recorded, so
+# the log can tell a wedge that still reported "connected" from a mesh fault.
 link=0
+link_word=down
 if link_up; then
     link=1
+    link_word=up
     if [[ "${bounces}" -gt 0 ]]; then
-        log "link on ${IFACE} is up again after ${bounces} bounce(s)"
+        record "link on ${IFACE} is up again after ${bounces} bounce(s)"
         bounces=0
         remember_bounces 0
     fi
@@ -218,14 +228,22 @@ fi
 if [[ "${failures}" -ge "${REBOOT_AT}" ]]; then
     up="$(uptime_s)"
     need="$(reboot_threshold_s)"
-    if [[ "${link}" -eq 1 ]]; then
-        record "link up, gateway unreachable - mesh/uplink fault, not rebooting (${failures} consecutive failures)"
-    elif [[ "${bounces}" -lt "${REBOOT_BOUNCES}" ]]; then
-        record "would reboot but only ${bounces} bounce(s) tried without the link returning (need ${REBOOT_BOUNCES}); skipping the reboot"
+    # Past the hard cap neither the link state nor the bounce count holds
+    # the reboot back any more; only the uptime backoff still does.
+    forced=0
+    if [[ "${failures}" -ge "${HARD_REBOOT_AT}" ]]; then forced=1; fi
+    if [[ "${forced}" -eq 0 && "${link}" -eq 1 ]]; then
+        record "link up, gateway unreachable - mesh/uplink fault; reboot deferred (${failures}/${HARD_REBOOT_AT} consecutive failures)"
+    elif [[ "${forced}" -eq 0 && "${bounces}" -lt "${REBOOT_BOUNCES}" ]]; then
+        record "only ${bounces} bounce(s) tried without the link returning (need ${REBOOT_BOUNCES}); reboot deferred (${failures}/${HARD_REBOOT_AT} consecutive failures)"
     elif [[ "${up}" -ge "${need}" ]]; then
+        why="${bounces} bounces without the link returning"
+        if [[ "${forced}" -eq 1 ]]; then
+            why="hard cap reached, link ${link_word}, ${bounces} bounce(s) without the link returning"
+        fi
         # Count it before ordering it, so the count survives the reboot.
         remember_reboots $((reboots + 1))
-        record "rebooting: ${failures} consecutive failures, ${bounces} bounces without the link returning, up ${up}s (threshold ${need}s, watchdog reboot #$((reboots + 1)))"
+        record "rebooting: ${failures} consecutive failures, ${why}, up ${up}s (threshold ${need}s, watchdog reboot #$((reboots + 1)))"
         systemctl reboot
         exit 0
     else
@@ -239,7 +257,7 @@ if [[ "${failures}" -ge "${BOUNCE_AT}" ]]; then
         record "playing; bounce deferred ($((deferrals + 1))/${MAX_DEFERRALS})"
         exit 0
     fi
-    [[ "${deferrals}" -gt 0 ]] && remember_deferrals 0
+    if [[ "${deferrals}" -gt 0 ]]; then remember_deferrals 0; fi
     remember_bounces $((bounces + 1))
     record "bouncing Wi-Fi"
     # NetworkManager persists the radio switch; if this run is killed during

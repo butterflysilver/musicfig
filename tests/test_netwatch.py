@@ -413,20 +413,23 @@ class NetwatchTests(unittest.TestCase):
                 self.fake('nmcli', body)
                 out = self.run_check(NETWATCH_REBOOT_AT='1')
                 self.assertEqual('systemctl reboot' in self.calls_made(), reboots, out)
-                self.assertEqual('mesh/uplink fault, not rebooting' in out, not reboots, out)
+                self.assertEqual('mesh/uplink fault; reboot deferred (1/3 consecutive failures)' in out,
+                                 not reboots, out)
 
     def test_reboot_needs_two_bounces_without_the_link_coming_back(self):
         self.set_gateway(up=False)
         self.set_uptime(5000)
-        out = self.run_check(NETWATCH_BOUNCE_AT='1', NETWATCH_REBOOT_AT='1')
-        self.assertIn('would reboot but only 0 bounce(s) tried without the link returning (need 2)', out)
+        # REBOOT_AT=2 -> hard cap 6, well past the three checks driven here
+        out = self.run_check(NETWATCH_BOUNCE_AT='1', NETWATCH_REBOOT_AT='2')
+        self.assertNotIn('reboot', out)
         self.assertEqual(self.counter('bounces'), 1)
-        out = self.run_check(NETWATCH_BOUNCE_AT='1', NETWATCH_REBOOT_AT='1')
-        self.assertIn('would reboot but only 1 bounce(s) tried', out)
+        out = self.run_check(NETWATCH_BOUNCE_AT='1', NETWATCH_REBOOT_AT='2')
+        self.assertIn('only 1 bounce(s) tried without the link returning (need 2); reboot deferred (2/6 consecutive failures)', out)
         self.assertEqual(self.counter('bounces'), 2)
         self.assertNotIn('systemctl reboot', self.calls_made())
-        out = self.run_check(NETWATCH_BOUNCE_AT='1', NETWATCH_REBOOT_AT='1')
+        out = self.run_check(NETWATCH_BOUNCE_AT='1', NETWATCH_REBOOT_AT='2')
         self.assertIn('rebooting: 3 consecutive failures, 2 bounces without the link returning', out)
+        self.assertNotIn('hard cap', out)
         self.assertIn('systemctl reboot', self.calls_made())
         # the default ladder is unchanged for a wedged chip: 4 misses, 2 bounces, reboot
         shutil.rmtree(self.state)
@@ -437,7 +440,7 @@ class NetwatchTests(unittest.TestCase):
         self.assertEqual(self.calls_made().count('nmcli radio wifi off'), 2)
         self.assertEqual(self.calls_made().count('systemctl reboot'), 1)
 
-    def test_link_up_without_gateway_is_a_mesh_fault_not_a_reboot(self):
+    def test_link_up_without_gateway_defers_the_reboot_until_the_hard_cap(self):
         self.set_gateway(up=False)
         for _ in range(3):
             self.run_check()
@@ -446,22 +449,60 @@ class NetwatchTests(unittest.TestCase):
         self.set_link(up=True)
         out = self.run_check()
         self.assertIn('link on wlan0 is up again after 2 bounce(s)', out)
-        self.assertIn('link up, gateway unreachable - mesh/uplink fault, not rebooting (4 consecutive failures)', out)
+        self.assertIn('link up, gateway unreachable - mesh/uplink fault; reboot deferred (4/12 consecutive failures)', out)
         self.assertNotIn('systemctl reboot', self.calls_made())
         self.assertIn('bouncing Wi-Fi', out)          # the cheap fix is still tried
         self.assertEqual(self.counter('bounces'), 1)  # ...and counted from zero again
-        for _ in range(5):
+        for n in range(5, 12):
             out = self.run_check()
-        self.assertIn('mesh/uplink fault, not rebooting (9 consecutive failures)', out)
+            self.assertIn('mesh/uplink fault; reboot deferred (%d/12 consecutive failures)' % n, out)
+            self.assertNotIn('systemctl reboot', self.calls_made())
+        # both link lines are in the persistent log for the post-mortem
+        messages = [l.split(' ', 2)[2] for l in self.log_lines()]
+        self.assertIn('link on wlan0 is up again after 1 bounce(s)', messages)
+        self.assertEqual(messages[-2], 'link up, gateway unreachable - mesh/uplink fault; reboot deferred (11/12 consecutive failures)')
+        # miss 12: the hard cap - unless the uptime backoff says otherwise
+        self.set_uptime(100)
+        out = self.run_check()
+        self.assertIn('would reboot but only up 100s (< 1200s after 0 watchdog reboot(s))', out)
+        self.assertNotIn('reboot deferred', out)
         self.assertNotIn('systemctl reboot', self.calls_made())
-        self.assertEqual([l for l in self.log_lines() if 'mesh/uplink fault' in l][-1].split(' ', 2)[2],
-                         'link up, gateway unreachable - mesh/uplink fault, not rebooting (9 consecutive failures)')
-        # the AP goes away too: two more bounces without the link, then the reboot
-        self.set_link(up=False)
+        self.set_uptime(5000)
         out = self.run_check()
-        self.assertIn('would reboot but only 1 bounce(s) tried', out)
+        self.assertIn('rebooting: 13 consecutive failures, hard cap reached, link up, 0 bounce(s) without the link returning, up 5000s (threshold 1200s, watchdog reboot #1)', out)
+        self.assertIn('systemctl reboot', self.calls_made())
+
+    def test_hard_cap_reboots_at_twelve_misses_with_the_link_up(self):
+        self.set_gateway(up=False)
+        self.set_link(up=True)
+        self.set_counter('failures', 11)
         out = self.run_check()
-        self.assertIn('rebooting: 11 consecutive failures, 2 bounces', out)
+        self.assertIn('rebooting: 12 consecutive failures, hard cap reached, link up', out)
+        self.assertIn('systemctl reboot', self.calls_made())
+
+    def test_hard_cap_overrides_the_bounce_gate_too(self):
+        # a link that is down with no bounce ever tried (here: the bounce
+        # step is out of reach) still reboots at the cap
+        self.set_gateway(up=False)
+        for n in range(1, 12):
+            out = self.run_check(NETWATCH_BOUNCE_AT='100')
+            if n >= 4:
+                self.assertIn('only 0 bounce(s) tried without the link returning (need 2); reboot deferred (%d/12 consecutive failures)' % n, out)
+        self.assertNotIn('systemctl reboot', self.calls_made())
+        out = self.run_check(NETWATCH_BOUNCE_AT='100')
+        self.assertIn('rebooting: 12 consecutive failures, hard cap reached, link down, 0 bounce(s) without the link returning', out)
+        self.assertIn('systemctl reboot', self.calls_made())
+
+    def test_two_bounces_still_land_before_the_cap_under_continuous_playback(self):
+        # each bounce waits out its three deferrals: bounce at 5 and 9, reboot at 10
+        self.set_gateway(up=False)
+        self.set_playing(True)
+        for n in range(1, 10):
+            out = self.run_check()
+            self.assertNotIn('systemctl reboot', self.calls_made())
+        self.assertEqual(self.calls_made().count('nmcli radio wifi off'), 2)
+        out = self.run_check()
+        self.assertIn('rebooting: 10 consecutive failures, 2 bounces without the link returning', out)
         self.assertIn('systemctl reboot', self.calls_made())
 
     def test_recovery_resets_the_bounce_count(self):
@@ -490,7 +531,7 @@ class NetwatchTests(unittest.TestCase):
             self.assertEqual(self.counter('deferrals'), n)
             self.assertNotIn('nmcli radio wifi off', self.calls_made())
         # failure 4 would be the reboot step: no bounce has been tried, so no reboot either
-        self.assertIn('would reboot but only 0 bounce(s) tried', out)
+        self.assertIn('only 0 bounce(s) tried without the link returning (need 2); reboot deferred (4/12 consecutive failures)', out)
         self.assertNotIn('systemctl reboot', self.calls_made())
         out = self.run_check()
         self.assertIn('bouncing Wi-Fi', out)

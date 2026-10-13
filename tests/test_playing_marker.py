@@ -75,17 +75,32 @@ class SetPlayingTests(unittest.TestCase):
             self.assertEqual(self.exists(), playing, state)
 
     def test_lego_plugs_the_marker_into_homepod(self):
-        lego.homepod.on_playing(True)
+        stream = object()
+        lego.homepod.on_playing(stream, True)
         self.assertTrue(self.exists())
-        lego.homepod.on_playing(False)
+        lego.homepod.on_playing(stream, False)
+        self.assertFalse(self.exists())
+
+    def test_a_replaced_streams_late_end_does_not_clear_the_new_one(self):
+        # stop()'s 5 s wait can run out before the old stream's teardown
+        # reports its end; that report lands after the next stream started
+        old, new = object(), object()
+        lego.homepod.on_playing(old, True)
+        lego.homepod.on_playing(new, True)
+        lego.homepod.on_playing(old, False)
+        self.assertTrue(self.exists())
+        lego.homepod.on_playing(new, False)
         self.assertFalse(self.exists())
 
 
 class HomepodHookTests(unittest.TestCase):
     def setUp(self):
         self.seen = []
-        hp.on_playing = self.seen.append
+        hp.on_playing = lambda stream, playing: self.seen.append((stream, playing))
         self.addCleanup(setattr, hp, 'on_playing', None)
+
+    def states(self):
+        return [playing for _stream, playing in self.seen]
 
     def stream(self, sources, **patches):
         started, ok = threading.Event(), [False]
@@ -103,13 +118,20 @@ class HomepodHookTests(unittest.TestCase):
                              _get_device=mock.AsyncMock(return_value=device),
                              _play_source=mock.AsyncMock())
         self.assertTrue(ok)
-        self.assertEqual(self.seen, [True, False])
+        self.assertEqual(self.states(), [True, False])
+        self.assertIs(self.seen[0][0], self.seen[1][0])   # one token for the whole stream
         atv.close.assert_called_once()
+        # a second stream reports under a token of its own
+        with mock.patch.object(hp.pyatv, 'connect', mock.AsyncMock(return_value=atv), create=True):
+            self.stream(['https://x.example/c.mp3'],
+                        _get_device=mock.AsyncMock(return_value=device),
+                        _play_source=mock.AsyncMock())
+        self.assertIsNot(self.seen[2][0], self.seen[0][0])
 
     def test_stream_that_never_starts_only_reports_the_end(self):
         ok = self.stream([], _get_device=mock.AsyncMock(return_value=None))
         self.assertFalse(ok)
-        self.assertEqual(self.seen, [False])
+        self.assertEqual(self.states(), [False])
 
     def test_hook_failure_never_ends_the_stream(self):
         hp.on_playing = mock.Mock(side_effect=RuntimeError('marker exploded'))
@@ -120,12 +142,12 @@ class HomepodHookTests(unittest.TestCase):
                                  _get_device=mock.AsyncMock(return_value=mock.Mock()),
                                  _play_source=mock.AsyncMock())
         self.assertTrue(ok)
-        self.assertEqual(hp.on_playing.call_args_list, [mock.call(True), mock.call(False)])
+        self.assertEqual([c.args[1] for c in hp.on_playing.call_args_list], [True, False])
         self.assertTrue(all('on_playing hook failed' in line for line in logs.output))
 
     def test_no_hook_is_fine(self):
         hp.on_playing = None
-        hp._notify_playing(True)   # nothing to call, nothing raised
+        hp._notify_playing(object(), True)   # nothing to call, nothing raised
 
 
 if __name__ == '__main__':

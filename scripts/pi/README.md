@@ -185,16 +185,22 @@ kiosk recipe) only catches a hung kernel, so the installer adds
 |---|---|
 | 1 | logged |
 | 2+ | `nmcli radio wifi off` / `on` (autoconnect rejoins) - unless a figure is playing, in which case the bounce waits a cycle, at most three times, then goes ahead anyway |
-| 4+ | `systemctl reboot` - but never within 20 minutes of boot, and each consecutive watchdog reboot doubles that wait (20, 40, 80, then 160 minutes, the cap), so a router or mesh extender that is down for hours costs a handful of reboots, not one every ~22 minutes; and only once two bounces in a row have left the Wi-Fi link down |
+| 4+ | `systemctl reboot` - but never within 20 minutes of boot, and each consecutive watchdog reboot doubles that wait (20, 40, 80, then 160 minutes, the cap), so a router or mesh extender that is down for hours costs a handful of reboots, not one every ~22 minutes; and, until 12 misses, only once two bounces in a row have left the Wi-Fi link down |
+| 12+ | `systemctl reboot` regardless of the link state and the bounce count (the uptime rule above still applies) |
 
 The link check is NetworkManager's `nmcli -t -f GENERAL.STATE dev show wlan0`
 (`NETWATCH_IFACE` to change the device): exactly `100 (connected)` is up,
 anything else - or no answer at all - is down. Two bounces that do not bring
 the link back are a wedged chip, which is what the reboot is for. A link that
-is up while the gateway still does not answer is the mesh extender or the
-router's uplink being down; that is logged as "link up, gateway unreachable -
-mesh/uplink fault, not rebooting", because a reboot cannot fix it. The
-bounces-without-link counter resets as soon as the link is seen up again.
+is up while the gateway still does not answer looks like the mesh extender or
+the router's uplink being down, which a reboot cannot fix, so it is logged as
+"link up, gateway unreachable - mesh/uplink fault; reboot deferred (N/12
+consecutive failures)" and the reboot waits. It only waits, though: a wedged
+chip can still report "connected" (the router listed both Pis that wedged on
+2026-10-12 as online), so at 12 misses (24 minutes, 3 x the reboot threshold)
+the reboot goes ahead whatever the link says, logged with "hard cap reached"
+and the link state. The bounces-without-link counter resets, with a log line,
+as soon as the link is seen up again.
 
 The playing check is `/run/musicfig/playing` (plus `systemctl is-active
 musicfig`): musicfig keeps the file while a local MP3 or a HomePod stream is
@@ -202,7 +208,9 @@ running (`app/lego.py`; either plays fine without the gateway, and the bounce
 - or the reboot behind it - would cut it). `RuntimeDirectory=musicfig` in the
 unit creates `/run/musicfig` for the service and removes it when musicfig
 stops, so a crash never leaves a stale marker. Deferring the bounce also
-defers the reboot, since the reboot needs the bounces first.
+defers the reboot, since the reboot wants the bounces first - which is what
+the 12-miss cap leaves room for: two bounces, each after three deferrals,
+still land before it.
 
 The failure, bounce and deferral counters live in `/run/musicfig-netwatch/`
 (tmpfs, cleared by the reboot) and reset on the first successful ping. Two
