@@ -13,35 +13,70 @@
 #
 #   failure 1        log it
 #   failure 2        bounce Wi-Fi (nmcli radio wifi off/on; autoconnect rejoins)
-#   failure 4+       reboot, but only once the Pi has been up MIN_UPTIME_S, so
-#                    a router that is down does not turn into a 2-minute boot
-#                    loop (it becomes one reboot per ~MIN_UPTIME_S instead)
+#   failure 4+       reboot, but only once the Pi has been up MIN_UPTIME_S
+#                    times a backoff multiplier, so a router that is down
+#                    does not turn into a 2-minute boot loop
 #
 # The counter lives in STATE_DIR (tmpfs, so it resets on reboot) and goes
 # back to zero on the first successful ping. Everything it does is logged to
 # the journal under the unit name; `journalctl -u musicfig-netwatch` tells
 # the story of every blip.
 #
+# Two things survive the reboot (life-ops #121), both under /var/lib/musicfig:
+#
+#   REBOOTS_FILE  how many watchdog reboots in a row. Each one doubles the
+#                 uptime a further reboot needs (20/40/80/160 min, capped at
+#                 8x), so a whole-house outage costs a handful of reboots,
+#                 not one every ~22 min. Reset by the first successful ping.
+#   LOG_FILE      every bounce / reboot / "would reboot" / recovery line,
+#                 timestamped. The pads' journal is volatile, so this is the
+#                 only record of what the watchdog did before a reboot. Kept
+#                 to the last LOG_KEEP lines.
+#
 # Overridable for tests (tests/test_netwatch.py) and for a different box:
-#   NETWATCH_STATE_DIR   where the failure counter lives (default /run/musicfig-netwatch)
-#   NETWATCH_UPTIME_FILE /proc/uptime or a fake
-#   NETWATCH_TARGET      host to ping instead of the default gateway
-#   NETWATCH_REBOOT_AT   consecutive failures before a reboot (default 4)
-#   NETWATCH_BOUNCE_AT   consecutive failures before a Wi-Fi bounce (default 2)
-#   NETWATCH_MIN_UPTIME  seconds of uptime required before a reboot (default 1200)
+#   NETWATCH_STATE_DIR     where the failure counter lives (default /run/musicfig-netwatch)
+#   NETWATCH_STATE_PERSIST the consecutive-reboot counter (default /var/lib/musicfig/netwatch-reboots)
+#   NETWATCH_LOG           the persistent log (default /var/lib/musicfig/netwatch.log)
+#   NETWATCH_UPTIME_FILE   /proc/uptime or a fake
+#   NETWATCH_TARGET        host to ping instead of the default gateway
+#   NETWATCH_REBOOT_AT     consecutive failures before a reboot (default 4)
+#   NETWATCH_BOUNCE_AT     consecutive failures before a Wi-Fi bounce (default 2)
+#   NETWATCH_MIN_UPTIME    seconds of uptime required before the first reboot (default 1200)
 #
 set -euo pipefail
 
 STATE_DIR="${NETWATCH_STATE_DIR:-/run/musicfig-netwatch}"
+REBOOTS_FILE="${NETWATCH_STATE_PERSIST:-/var/lib/musicfig/netwatch-reboots}"
+LOG_FILE="${NETWATCH_LOG:-/var/lib/musicfig/netwatch.log}"
 UPTIME_FILE="${NETWATCH_UPTIME_FILE:-/proc/uptime}"
 BOUNCE_AT="${NETWATCH_BOUNCE_AT:-2}"
 REBOOT_AT="${NETWATCH_REBOOT_AT:-4}"
 MIN_UPTIME_S="${NETWATCH_MIN_UPTIME:-1200}"
+MAX_BACKOFF=8
+LOG_KEEP=500
+LOG_TRIM_AT=600
 PING_COUNT=3
 PING_WAIT_S=2
 BOUNCE_PAUSE_S=5
 
 log() { echo "netwatch: $*"; }
+
+# Journal line plus a timestamped copy in LOG_FILE. A log that cannot be
+# written (read-only /var/lib, missing user) is skipped, never fatal; the
+# trim keeps it small with portable tools (tail > tmp && mv).
+record() {
+    log "$*"
+    mkdir -p "$(dirname "${LOG_FILE}")" 2>/dev/null || return 0
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "${LOG_FILE}" 2>/dev/null || return 0
+    local lines
+    lines="$(wc -l < "${LOG_FILE}" 2>/dev/null || echo 0)"
+    lines="${lines// /}"
+    if [[ "${lines:-0}" -gt "${LOG_TRIM_AT}" ]]; then
+        tail -n "${LOG_KEEP}" "${LOG_FILE}" > "${LOG_FILE}.tmp" 2>/dev/null \
+            && mv "${LOG_FILE}.tmp" "${LOG_FILE}" 2>/dev/null \
+            || rm -f "${LOG_FILE}.tmp" 2>/dev/null || true
+    fi
+}
 
 # A state dir that cannot be written degrades to "log only, no memory"
 # rather than killing the check (set -e would otherwise exit here).
@@ -53,6 +88,28 @@ if [[ -r "${FAIL_FILE}" ]]; then
     failures="${failures:-0}"
 fi
 remember() { echo "$1" > "${FAIL_FILE}" 2>/dev/null || log "cannot write ${FAIL_FILE}"; }
+
+# The reboot counter is read the same way; garbage counts as zero.
+reboots=0
+if [[ -r "${REBOOTS_FILE}" ]]; then
+    reboots="$(tr -dc '0-9' < "${REBOOTS_FILE}" || true)"
+    reboots="${reboots:-0}"
+fi
+remember_reboots() {
+    mkdir -p "$(dirname "${REBOOTS_FILE}")" 2>/dev/null || true
+    echo "$1" > "${REBOOTS_FILE}" 2>/dev/null || log "cannot write ${REBOOTS_FILE}"
+}
+
+# MIN_UPTIME_S * 2^reboots, capped at MAX_BACKOFF x (so the counter cannot
+# shift the threshold out of reach, whatever is in the file).
+reboot_threshold_s() {
+    local mult=1 n=0
+    while [[ "${n}" -lt "${reboots}" && "${mult}" -lt "${MAX_BACKOFF}" ]]; do
+        mult=$((mult * 2))
+        n=$((n + 1))
+    done
+    echo $((MIN_UPTIME_S * mult))
+}
 
 uptime_s() {
     local up
@@ -79,7 +136,13 @@ fi
 
 if [[ "${reachable}" -eq 1 ]]; then
     if [[ "${failures}" -gt 0 ]]; then
-        log "gateway ${target} reachable again after ${failures} failed check(s)"
+        record "gateway ${target} reachable again after ${failures} failed check(s)"
+    fi
+    # The first good ping after a watchdog reboot is the recovery that the
+    # tmpfs counter cannot see (it came up at zero); it also ends the backoff.
+    if [[ "${reboots}" -gt 0 ]]; then
+        record "gateway ${target} reachable after ${reboots} watchdog reboot(s); backoff reset"
+        remember_reboots 0
     fi
     remember 0
     exit 0
@@ -91,16 +154,19 @@ log "cannot reach ${target:-the gateway} (consecutive failures: ${failures})"
 
 if [[ "${failures}" -ge "${REBOOT_AT}" ]]; then
     up="$(uptime_s)"
-    if [[ "${up}" -ge "${MIN_UPTIME_S}" ]]; then
-        log "rebooting: ${failures} consecutive failures, up ${up}s"
+    need="$(reboot_threshold_s)"
+    if [[ "${up}" -ge "${need}" ]]; then
+        # Count it before ordering it, so the count survives the reboot.
+        remember_reboots $((reboots + 1))
+        record "rebooting: ${failures} consecutive failures, up ${up}s (threshold ${need}s, watchdog reboot #$((reboots + 1)))"
         systemctl reboot
         exit 0
     fi
-    log "would reboot but only up ${up}s (< ${MIN_UPTIME_S}s); skipping the reboot"
+    record "would reboot but only up ${up}s (< ${need}s after ${reboots} watchdog reboot(s)); skipping the reboot"
 fi
 
 if [[ "${failures}" -ge "${BOUNCE_AT}" ]]; then
-    log "bouncing Wi-Fi"
+    record "bouncing Wi-Fi"
     # NetworkManager persists the radio switch; if this run is killed during
     # the pause the Pi would boot with Wi-Fi off, so the trap turns it back
     # on no matter how the script ends.

@@ -185,13 +185,20 @@ kiosk recipe) only catches a hung kernel, so the installer adds
 |---|---|
 | 1 | logged |
 | 2+ | `nmcli radio wifi off` / `on` (autoconnect rejoins) |
-| 4+ | `systemctl reboot` - but never within 20 minutes of boot, so a router that is down means one reboot per ~20 minutes, not a boot loop |
+| 4+ | `systemctl reboot` - but never within 20 minutes of boot, and each consecutive watchdog reboot doubles that wait (20, 40, 80, then 160 minutes, the cap), so a router or mesh extender that is down for hours costs a handful of reboots, not one every ~22 minutes |
 
-The counter lives in `/run/musicfig-netwatch/` (tmpfs, cleared by the reboot)
-and resets on the first successful ping. `journalctl -u musicfig-netwatch -g 'netwatch:'`
-shows every blip and what was done about it (the script itself is silent on a
-healthy Pi; systemd still logs each 2-minute run, hence the `-g` filter).
-`tests/test_netwatch.py` drives the ladder with fake `ping`/`nmcli`/`systemctl`.
+The failure counter lives in `/run/musicfig-netwatch/` (tmpfs, cleared by the
+reboot) and resets on the first successful ping. Two files survive the reboot:
+`/var/lib/musicfig/netwatch-reboots` holds the number of consecutive
+watchdog-caused reboots (the backoff multiplier; reset by the first good
+ping) and `/var/lib/musicfig/netwatch.log` gets a timestamped copy of every
+bounce, reboot, skipped reboot and recovery line, kept to the last 500 lines.
+The pads' journal is volatile, so that log is the only record of what the
+watchdog did before a reboot. `journalctl -u musicfig-netwatch -g 'netwatch:'`
+shows every blip this boot and what was done about it (the script itself is
+silent on a healthy Pi; systemd still logs each 2-minute run, hence the `-g`
+filter). `tests/test_netwatch.py` drives the ladder, the backoff and the log
+with fake `ping`/`nmcli`/`systemctl`.
 
 ## Useful commands
 
