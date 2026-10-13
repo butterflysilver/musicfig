@@ -55,6 +55,47 @@ PAD_GONE_RESTART_AFTER = 60.0
 # treated as transient.
 _PAD_GONE_ERRNOS = (5, 19, 32)
 
+# The "a figure is playing" marker for the network watchdog (life-ops #121):
+# scripts/pi/netwatch.sh puts its Wi-Fi bounce off while this file exists,
+# because a local MP3 or a HomePod stream on the same mesh extender plays
+# fine without the gateway and the bounce (and the reboot behind it) would
+# cut it. systemd creates /run/musicfig for the service (RuntimeDirectory=)
+# and removes it when musicfig stops, so a crash never leaves a stale marker.
+# On a box without that directory the marker is simply not kept.
+PLAYING_FILE = os.environ.get('MUSICFIG_PLAYING_FILE', '/run/musicfig/playing')
+_playing_sources = set()
+_playing_lock = threading.Lock()
+_playing_warned = False
+
+
+def set_playing(source, playing):
+    """Record that `source` ('mp3', 'homepod') started or stopped playing.
+    The marker exists while at least one source is playing."""
+    global _playing_warned
+    with _playing_lock:
+        before = bool(_playing_sources)
+        (_playing_sources.add if playing else _playing_sources.discard)(source)
+        after = bool(_playing_sources)
+        if after == before:
+            return
+        try:
+            if after:
+                open(PLAYING_FILE, 'w').close()
+            else:
+                os.remove(PLAYING_FILE)
+        except FileNotFoundError:
+            if after and not _playing_warned:
+                _playing_warned = True
+                logger.info('no %s: the network watchdog will not see playback' % os.path.dirname(PLAYING_FILE))
+        except OSError as e:
+            logger.warning('playing marker %s: %s' % (PLAYING_FILE, e))
+
+
+# A HomePod stream reports its own start and end (it can run out on its own
+# with the figure still on the pad); the local player's states come through
+# the monitor thread in Base.initMp3.
+homepod.on_playing = lambda playing: set_playing('homepod', playing)
+
 
 class Dimensions():
     """The LEGO Dimensions pad. Survives the pad being absent at start-up
@@ -289,6 +330,7 @@ class Base():
                 state = self.p.event_queue.get(block=True, timeout=None)
                 mp3state = str(state[0]).replace('PlayerState.', '')
                 mp3elapsed = state[1]
+                set_playing('mp3', mp3state == 'PLAYING')
 
         monitor_thread = threading.Thread(target=monitor, name="monitor", daemon=True)
         monitor_thread.start() 

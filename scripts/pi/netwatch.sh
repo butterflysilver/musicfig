@@ -15,12 +15,31 @@
 #   failure 2        bounce Wi-Fi (nmcli radio wifi off/on; autoconnect rejoins)
 #   failure 4+       reboot, but only once the Pi has been up MIN_UPTIME_S
 #                    times a backoff multiplier, so a router that is down
-#                    does not turn into a 2-minute boot loop
+#                    does not turn into a 2-minute boot loop, and only once
+#                    two bounces have been tried without the Wi-Fi link
+#                    coming back (a wedged chip; see below)
 #
 # The counter lives in STATE_DIR (tmpfs, so it resets on reboot) and goes
 # back to zero on the first successful ping. Everything it does is logged to
 # the journal under the unit name; `journalctl -u musicfig-netwatch` tells
 # the story of every blip.
+#
+# Two refinements from life-ops #121 live in the same tmpfs dir:
+#
+#   bounces     how many bounces in a row NetworkManager has not reported the
+#               link on IFACE back at "100 (connected)" afterwards. A reboot
+#               needs REBOOT_BOUNCES of them: a chip that will not reassociate
+#               is the wedge a reboot clears, while a link that is up with a
+#               gateway that still does not answer is the mesh extender or
+#               the router's uplink being down - logged as such, never
+#               rebooted for, because a reboot cannot fix it.
+#   deferrals   bounces put off because musicfig was mid-playback (a local
+#               MP3 or a HomePod stream on the same extender plays fine
+#               without the gateway; the bounce, and the reboot behind it,
+#               would cut it). musicfig keeps PLAYING_FILE present while a
+#               figure plays (app/lego.py); at most MAX_DEFERRALS cycles per
+#               bounce, then it goes ahead anyway (and no bounce means no
+#               reboot either, see above).
 #
 # Two things survive the reboot (life-ops #121), both under /var/lib/musicfig:
 #
@@ -39,6 +58,8 @@
 #   NETWATCH_LOG           the persistent log (default /var/lib/musicfig/netwatch.log)
 #   NETWATCH_UPTIME_FILE   /proc/uptime or a fake
 #   NETWATCH_TARGET        host to ping instead of the default gateway
+#   NETWATCH_IFACE         the Wi-Fi device whose link state nmcli reports (default wlan0)
+#   NETWATCH_PLAYING_FILE  musicfig's "a figure is playing" marker (default /run/musicfig/playing)
 #   NETWATCH_REBOOT_AT     consecutive failures before a reboot (default 4)
 #   NETWATCH_BOUNCE_AT     consecutive failures before a Wi-Fi bounce (default 2)
 #   NETWATCH_MIN_UPTIME    seconds of uptime required before the first reboot (default 1200)
@@ -49,10 +70,14 @@ STATE_DIR="${NETWATCH_STATE_DIR:-/run/musicfig-netwatch}"
 REBOOTS_FILE="${NETWATCH_STATE_PERSIST:-/var/lib/musicfig/netwatch-reboots}"
 LOG_FILE="${NETWATCH_LOG:-/var/lib/musicfig/netwatch.log}"
 UPTIME_FILE="${NETWATCH_UPTIME_FILE:-/proc/uptime}"
+IFACE="${NETWATCH_IFACE:-wlan0}"
+PLAYING_FILE="${NETWATCH_PLAYING_FILE:-/run/musicfig/playing}"
 BOUNCE_AT="${NETWATCH_BOUNCE_AT:-2}"
 REBOOT_AT="${NETWATCH_REBOOT_AT:-4}"
 MIN_UPTIME_S="${NETWATCH_MIN_UPTIME:-1200}"
 MAX_BACKOFF=8
+REBOOT_BOUNCES=2
+MAX_DEFERRALS=3
 LOG_KEEP=500
 LOG_TRIM_AT=600
 PING_COUNT=3
@@ -78,23 +103,30 @@ record() {
     fi
 }
 
+# Every counter is a file holding one number; garbage counts as zero and a
+# hand-edited "08" must not kill the run (hence base 10).
+read_count() {
+    local n=0
+    if [[ -r "$1" ]]; then
+        n="$(tr -dc '0-9' < "$1" || true)"
+    fi
+    echo $((10#${n:-0}))
+}
+
 # A state dir that cannot be written degrades to "log only, no memory"
 # rather than killing the check (set -e would otherwise exit here).
 mkdir -p "${STATE_DIR}" 2>/dev/null || log "cannot create ${STATE_DIR}"
 FAIL_FILE="${STATE_DIR}/failures"
-failures=0
-if [[ -r "${FAIL_FILE}" ]]; then
-    failures="$(tr -dc '0-9' < "${FAIL_FILE}" || true)"
-    failures=$((10#${failures:-0}))   # base 10: a hand-edited "08" must not kill the run
-fi
+BOUNCES_FILE="${STATE_DIR}/bounces"
+DEFERRALS_FILE="${STATE_DIR}/deferrals"
+failures="$(read_count "${FAIL_FILE}")"
+bounces="$(read_count "${BOUNCES_FILE}")"
+deferrals="$(read_count "${DEFERRALS_FILE}")"
 remember() { echo "$1" > "${FAIL_FILE}" 2>/dev/null || log "cannot write ${FAIL_FILE}"; }
+remember_bounces() { echo "$1" > "${BOUNCES_FILE}" 2>/dev/null || log "cannot write ${BOUNCES_FILE}"; }
+remember_deferrals() { echo "$1" > "${DEFERRALS_FILE}" 2>/dev/null || log "cannot write ${DEFERRALS_FILE}"; }
 
-# The reboot counter is read the same way; garbage counts as zero.
-reboots=0
-if [[ -r "${REBOOTS_FILE}" ]]; then
-    reboots="$(tr -dc '0-9' < "${REBOOTS_FILE}" || true)"
-    reboots=$((10#${reboots:-0}))
-fi
+reboots="$(read_count "${REBOOTS_FILE}")"
 remember_reboots() {
     mkdir -p "$(dirname "${REBOOTS_FILE}")" 2>/dev/null || true
     echo "$1" > "${REBOOTS_FILE}" 2>/dev/null || log "cannot write ${REBOOTS_FILE}"
@@ -116,6 +148,23 @@ uptime_s() {
     up="$(cut -d' ' -f1 "${UPTIME_FILE}" 2>/dev/null || true)"
     up="${up%.*}"
     echo "${up:-0}"
+}
+
+# NetworkManager's view of the Wi-Fi link: `GENERAL.STATE:100 (connected)`
+# once associated with an address. Exactly 100 is up - 110 is deactivating
+# and 120 failed - and no answer at all (nmcli missing, device gone) is down.
+link_up() {
+    local state
+    state="$(nmcli -t -f GENERAL.STATE dev show "${IFACE}" 2>/dev/null \
+             | awk -F: 'NR == 1 {print $2 + 0}' || true)"
+    [[ "${state:-0}" -eq 100 ]]
+}
+
+# musicfig keeps PLAYING_FILE present while a figure plays; a musicfig that
+# is not running cannot be mid-playback whatever the file says (systemd
+# removes its RuntimeDirectory with it anyway).
+playing() {
+    [[ -e "${PLAYING_FILE}" ]] && systemctl is-active --quiet musicfig >/dev/null 2>&1
 }
 
 # The gateway is the best thing to ping: it says "this Pi can talk to the
@@ -145,6 +194,8 @@ if [[ "${reachable}" -eq 1 ]]; then
         remember_reboots 0
     fi
     remember 0
+    [[ "${bounces}" -gt 0 ]] && remember_bounces 0
+    [[ "${deferrals}" -gt 0 ]] && remember_deferrals 0
     exit 0
 fi
 
@@ -152,20 +203,44 @@ failures=$((failures + 1))
 remember "${failures}"
 log "cannot reach ${target:-the gateway} (consecutive failures: ${failures})"
 
+# A link that is back up after a bounce means the chip is fine; the bounces
+# that got it there no longer count towards a reboot.
+link=0
+if link_up; then
+    link=1
+    if [[ "${bounces}" -gt 0 ]]; then
+        log "link on ${IFACE} is up again after ${bounces} bounce(s)"
+        bounces=0
+        remember_bounces 0
+    fi
+fi
+
 if [[ "${failures}" -ge "${REBOOT_AT}" ]]; then
     up="$(uptime_s)"
     need="$(reboot_threshold_s)"
-    if [[ "${up}" -ge "${need}" ]]; then
+    if [[ "${link}" -eq 1 ]]; then
+        record "link up, gateway unreachable - mesh/uplink fault, not rebooting (${failures} consecutive failures)"
+    elif [[ "${bounces}" -lt "${REBOOT_BOUNCES}" ]]; then
+        record "would reboot but only ${bounces} bounce(s) tried without the link returning (need ${REBOOT_BOUNCES}); skipping the reboot"
+    elif [[ "${up}" -ge "${need}" ]]; then
         # Count it before ordering it, so the count survives the reboot.
         remember_reboots $((reboots + 1))
-        record "rebooting: ${failures} consecutive failures, up ${up}s (threshold ${need}s, watchdog reboot #$((reboots + 1)))"
+        record "rebooting: ${failures} consecutive failures, ${bounces} bounces without the link returning, up ${up}s (threshold ${need}s, watchdog reboot #$((reboots + 1)))"
         systemctl reboot
         exit 0
+    else
+        record "would reboot but only up ${up}s (< ${need}s after ${reboots} watchdog reboot(s)); skipping the reboot"
     fi
-    record "would reboot but only up ${up}s (< ${need}s after ${reboots} watchdog reboot(s)); skipping the reboot"
 fi
 
 if [[ "${failures}" -ge "${BOUNCE_AT}" ]]; then
+    if [[ "${deferrals}" -lt "${MAX_DEFERRALS}" ]] && playing; then
+        remember_deferrals $((deferrals + 1))
+        record "playing; bounce deferred ($((deferrals + 1))/${MAX_DEFERRALS})"
+        exit 0
+    fi
+    [[ "${deferrals}" -gt 0 ]] && remember_deferrals 0
+    remember_bounces $((bounces + 1))
     record "bouncing Wi-Fi"
     # NetworkManager persists the radio switch; if this run is killed during
     # the pause the Pi would boot with Wi-Fi off, so the trap turns it back
