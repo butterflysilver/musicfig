@@ -63,7 +63,12 @@ def connectLego():
     legoThread.start()
 
 init_cache()
-connectLego()
+# MUSICFIG_NO_AUTOSTART=1 (the test package sets it) imports the app without
+# starting the pad thread; the service never sets it, so the default is on.
+if os.environ.get('MUSICFIG_NO_AUTOSTART') == '1':
+    logger.info('MUSICFIG_NO_AUTOSTART=1: pad thread not started.')
+else:
+    connectLego()
 
 def activated():
     try:

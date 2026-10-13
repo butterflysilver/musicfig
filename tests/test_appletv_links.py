@@ -1,6 +1,7 @@
 """appletv.youtube_deep_link: every link style in tags.yml becomes the
 youtube:// form that tvOS opens (plain https links are refused by tvOS)."""
 import asyncio
+import threading
 import unittest
 from unittest import mock
 
@@ -136,9 +137,11 @@ class LaunchSequenceTests(unittest.TestCase):
     def test_per_key_delays_are_applied_in_order(self):
         fake = FakeAtv()
         sleeps = []
+        here = threading.current_thread()
 
         async def rec(n):
-            sleeps.append(n)
+            if threading.current_thread() is here:  # not a background scan's sleep (life-ops #123)
+                sleeps.append(n)
         with mock.patch.object(appletv.asyncio, "sleep", rec):
             async def fake_connect(name=None, ip=None):
                 return fake

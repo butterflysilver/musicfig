@@ -22,7 +22,7 @@
 | **Yoto card on the Yoto itself** | `yoto: <card id>` plays the card on a real Yoto player ("card to device"): the Pi asks the same Yoto MCP to start it on `yoto_player` (a player id, its name, `"@room"` via `room_yoto_players`, or by default whichever player is online). Lift the figure to stop. No Yoto token on the Pi. |
 | **Room-aware tags** | Each Pi knows its room (`MUSICFIG_ROOM`, default: hostname). A tag can carry per-room overrides and `homepod: "@room"` targets that room's speaker. |
 | **Optional integrations** | Apple TV (Disney+, Netflix, YouTube deep links), HomePod, Hue Sync Box and Xbox are optional imports: a Pi without them still runs. `install.sh` installs the extras by default (`MUSICFIG_EXTRAS=no` to skip). |
-| **Tests** | `python -m unittest` (see `tests/`). |
+| **Tests** | `python -m unittest` (see `tests/`). `MUSICFIG_NO_AUTOSTART=1` (set by `tests/__init__.py`) makes `import app` skip starting the pad thread; the service never sets it. |
 
 ## How a house looks
 
