@@ -85,7 +85,7 @@ FAIL_FILE="${STATE_DIR}/failures"
 failures=0
 if [[ -r "${FAIL_FILE}" ]]; then
     failures="$(tr -dc '0-9' < "${FAIL_FILE}" || true)"
-    failures="${failures:-0}"
+    failures=$((10#${failures:-0}))   # base 10: a hand-edited "08" must not kill the run
 fi
 remember() { echo "$1" > "${FAIL_FILE}" 2>/dev/null || log "cannot write ${FAIL_FILE}"; }
 
@@ -93,7 +93,7 @@ remember() { echo "$1" > "${FAIL_FILE}" 2>/dev/null || log "cannot write ${FAIL_
 reboots=0
 if [[ -r "${REBOOTS_FILE}" ]]; then
     reboots="$(tr -dc '0-9' < "${REBOOTS_FILE}" || true)"
-    reboots="${reboots:-0}"
+    reboots=$((10#${reboots:-0}))
 fi
 remember_reboots() {
     mkdir -p "$(dirname "${REBOOTS_FILE}")" 2>/dev/null || true

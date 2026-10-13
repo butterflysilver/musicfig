@@ -207,6 +207,17 @@ class NetwatchTests(unittest.TestCase):
         self.run_check(expect_rc=None)           # the script dies of the signal...
         self.assertEqual(self.calls_made()[-1], 'nmcli radio wifi on')   # ...after the trap
 
+    def test_leading_zero_counters_do_not_kill_the_run(self):
+        os.makedirs(self.state)
+        with open(os.path.join(self.state, 'failures'), 'w') as f:
+            f.write('08' + chr(10))
+        os.makedirs(os.path.dirname(self.persist), exist_ok=True)
+        with open(self.persist, 'w') as f:
+            f.write('09' + chr(10))
+        self.set_gateway(up=False)
+        out = self.run_check()
+        self.assertIn('consecutive failures: 9', out)
+
     def test_garbage_in_the_state_file_is_treated_as_zero(self):
         os.makedirs(self.state)
         with open(os.path.join(self.state, 'failures'), 'w') as f:
