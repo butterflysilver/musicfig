@@ -168,6 +168,18 @@ class TitleTests(unittest.TestCase):
         self.assertIsNone(rp.title_from_url('deeplink://whatever'))
         self.assertIsNone(rp.title_from_url(''))
 
+    def test_disney_plus_and_netflix_links(self):
+        """Disney+ uses /movies/<slug>/<id> and /series/<slug>/<id>; its
+        /browse/entity-<uuid> links and Netflix's numeric /title/<id> carry no
+        slug, so they stay untitled rather than showing an id."""
+        self.assertEqual(rp.title_from_url('https://www.disneyplus.com/movies/toy-story-4/2CtjW4tKzIHp'), 'Toy Story 4')
+        self.assertEqual(rp.title_from_url('https://www.disneyplus.com/series/bluey/1xy9TAOQ0M3r'), 'Bluey')
+        self.assertEqual(rp.title_from_url('https://www.disneyplus.com/series/muppet-babies/6ioIyNjSW2yZ'),
+                         'Muppet Babies')
+        self.assertIsNone(rp.title_from_url(
+            'https://www.disneyplus.com/browse/entity-f7643452-fe64-4b05-8f09-c8bea9b2dd60'))
+        self.assertIsNone(rp.title_from_url('nflx://www.netflix.com/title/81330960'))
+
 
 class _Reply:
     def __init__(self, status, text=''):

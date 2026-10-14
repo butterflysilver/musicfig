@@ -126,15 +126,17 @@ def find_secret_keys(value, path=''):
 
 
 def title_from_url(url: str) -> Optional[str]:
-    """A readable title from a tv.apple.com (or similar slug-style) link:
-    .../movie/monsters-inc/umc.cmc.xxx -> "Monsters Inc". None when the URL
-    has no slug worth showing (YouTube ids, bare schemes)."""
+    """A readable title from a tv.apple.com or disneyplus.com (or similar
+    slug-style) link: .../movie/monsters-inc/umc.cmc.xxx -> "Monsters Inc",
+    .../series/bluey/1xy9TAOQ0M3r -> "Bluey". None when the URL has no slug
+    worth showing (YouTube ids, Disney+ browse/entity-<uuid> links, Netflix
+    numeric titles, bare schemes)."""
     try:
         parts = [p for p in urlparse(url).path.split('/') if p]
     except (ValueError, AttributeError):
         return None
     slug = None
-    for marker in ('movie', 'show', 'episode', 'collection', 'title'):
+    for marker in ('movie', 'movies', 'show', 'series', 'episode', 'collection', 'title'):
         if marker in parts:
             i = parts.index(marker)
             if i + 1 < len(parts):
