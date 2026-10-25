@@ -44,7 +44,9 @@ To test a branch before it is merged: `MUSICFIG_BRANCH=feat/pi-install-recipe ba
 | `/var/lib/musicfig/musicfig.log` | rotating app log (journald on the kiosk Pis is volatile, this is not) |
 | `/var/lib/musicfig/cache/` | Spotify song metadata sqlite cache |
 | `/var/lib/musicfig/yoto-*.json` | Yoto tokens/config (see below) |
+| `/var/lib/musicfig/pads-off` | exists while `gsd-pads off` is in force (see below) |
 | `/etc/systemd/system/musicfig.service` | the unit; env vars point the app at the paths above |
+| `/usr/local/bin/gsd-pads` | `scripts/pi/pads.py`: blank / restore the pad's lights (root-owned copy, Pi `python3`) |
 | `/etc/udev/rules.d/99-lego.rules` | makes the pad readable without root |
 
 ## First tag
@@ -172,6 +174,41 @@ runs `musicfig-network.service` as the unprivileged `musicfig` user (plus the
   `--no-sweep` skips the pings; an unknown flag exits 2 without sending;
   `journalctl -u musicfig-network` shows the sends.
 
+## Pad lights: the dark house (`gsd-pads`)
+
+`gsd-screen off` blanks a room's panel; `gsd-pads` does the same for the LEGO
+pad's lights, so the two together are the "dark house" command
+([life-ops #75](https://github.com/butterflysilver/life-ops/issues/75)):
+
+```
+ssh kitchen gsd-screen off; ssh kitchen gsd-pads off     # dark house
+ssh kitchen gsd-screen on;  ssh kitchen gsd-pads on      # morning
+ssh kitchen gsd-pads status                              # "off (1 pad)" / "on (no pad attached)"
+```
+
+* `off`: every pad goes dark and stays dark through tag events - the tap's
+  blue, the action colours, the lightshow and the lift's idle repaint are all
+  dropped in the pad driver (`app/lego.py`, `Dimensions.switch_pad` /
+  `fade_pad` / `flash_pad`); figures still play. The state is written to
+  `/var/lib/musicfig/pads-off`, so after a restart of musicfig in the night
+  (the pad-gone exit, a watchdog reboot) - or a pad re-plugged - the service
+  paints the pad dark again as soon as it has it (the pad's own power-on
+  light show would otherwise leave it lit until morning).
+* `on`: the file goes, and the pad loop repaints the idle colour (green with
+  `lights: on`, dark with `lights: off`).
+* `status`: the state plus the pad count (0 or 1), exit 0 either way.
+
+The service owns the USB pad, so the command does not open it: it asks the
+running musicfig over its localhost web port (`GET /pads`, `POST
+/pads/off|on`, `app/pads.py`; the same `127.0.0.1:5000` as the Spotify
+pages). Any user on the Pi may run it (the ssh aliases land as `kiosk`), no
+sudoers rule is involved, and it is standard library only, so the Pi's
+`/usr/bin/python3` runs it. With no pad plugged in the state is still recorded
+and applied when one appears (exit 0, `off (no pad attached; applies when one
+is plugged in)`); when musicfig is not running it says so and exits 1
+(`systemctl is-active musicfig`). `tests/test_pads.py` covers the flag, the
+gate, the repaint, the hook and the CLI with the pad driver stubbed.
+
 ## Network watchdog
 
 A Pi 5's Wi-Fi chip occasionally wedges: the router still shows the Pi
@@ -232,5 +269,6 @@ gate, the playback deferral and the log with fake `ping`/`nmcli`/`systemctl`.
 sudo systemctl status musicfig        # is it up?
 journalctl -u musicfig -b             # this boot's log
 sudo systemctl restart musicfig       # after editing tags.yml or config.py
+gsd-pads off|on|status                # pad lights (with gsd-screen: the dark house)
 bash install.sh                       # update to latest master
 ```

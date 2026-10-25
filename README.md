@@ -15,6 +15,7 @@
 | --- | --- |
 | **Pi install recipe** | `scripts/pi/install.sh`: idempotent install on Raspberry Pi OS Lite (Bookworm/Trixie): dedicated `musicfig` system user, Python venv, systemd unit, udev rule for the pad, config in `/etc/musicfig`, music and logs in `/var/lib/musicfig`. Re-run to update. Coexists with a kiosk browser on the same Pi. |
 | **Wake the display on tap** | `MUSICFIG_ON_TAG_CMD` runs a command on its own thread whenever a tag lands, for example `gsd-screen on` to un-blank the room's wall panel. |
+| **Dark house** | `gsd-pads off\|on\|status` blanks the pad's lights (and keeps them dark through tag events; figures still play) or gives the idle colour back, the way `gsd-screen off\|on` does the panel. `off` survives a service restart. Talks to the running service over localhost; see [`scripts/pi/README.md`](scripts/pi/README.md). |
 | **Pad hot-plug** | The pad can be missing at boot or unplugged while running: one log line, quiet retries every 3 s, automatic reconnect, and the idle colour restored. No log spam, no crash. |
 | **Headless-safe audio** | The audio device opens lazily and a missing sink (HDMI switched away, no speaker) never brings the service down. |
 | **HomePod / AirPlay streaming** | `airplay:` tags stream a local file to a HomePod through [pyatv](https://pyatv.dev). Streaming runs on a background loop, so the pad keeps reading; lifting the figure stops the stream. |

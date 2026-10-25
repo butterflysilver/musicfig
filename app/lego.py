@@ -98,6 +98,68 @@ def set_playing(source, playing):
 # the local player's states come through the monitor thread in Base.initMp3.
 homepod.on_playing = lambda stream, playing: set_playing(('homepod', stream), playing)
 
+# `gsd-pads off|on` (life-ops #75): the pad counterpart of `gsd-screen off`.
+# While the flag is set no light command reaches the pad - the tag loop, the
+# lightshow and the reconnect repaint all go through Dimensions.switch_pad /
+# fade_pad / flash_pad - so the house stays dark through tag events (the
+# music still plays); `on` clears it and the pad loop repaints the idle
+# colour (Base.repaintPads). The service owns the USB pad, so the CLI
+# (scripts/pi/pads.py, installed as gsd-pads) asks it over the localhost web
+# port (app/pads.py). The flag persists as a file so a restart in the night
+# (or the pad-gone exit above) does not light the pads again; where the file
+# cannot be written the flag still holds until the service restarts.
+PADS_OFF_FILE = os.environ.get('MUSICFIG_PADS_OFF_FILE', 'pads-off')
+_pads_off = False
+_pads_changed = threading.Event()  # set by set_pads_off, cleared by the pad loop
+_pad_driver = None                 # the Dimensions the pad loop drives; None before startLego
+
+
+def load_pads_off():
+    """Pick the flag up from the file (service start)."""
+    global _pads_off
+    _pads_off = os.path.exists(PADS_OFF_FILE)
+    if _pads_off:
+        # The pad lights itself up at power-on, so the first pass of the pad
+        # loop must paint it dark (repaintPads), not just hold the idle paint.
+        _pads_changed.set()
+        logger.info('gsd-pads off is in force: lights stay dark until `gsd-pads on`')
+    return _pads_off
+
+
+def pads_off():
+    return _pads_off
+
+
+def set_pads_off(off):
+    """Record `gsd-pads off` (True) or `on` (False) and ask the pad loop to
+    repaint. Returns the state now in force."""
+    global _pads_off
+    _pads_off = bool(off)
+    try:
+        if _pads_off:
+            open(PADS_OFF_FILE, 'w').close()
+        elif os.path.exists(PADS_OFF_FILE):
+            os.remove(PADS_OFF_FILE)
+    except OSError as e:
+        logger.warning('pads-off marker %s: %s' % (PADS_OFF_FILE, e))
+    _pads_changed.set()
+    logger.info('gsd-pads %s' % ('off: lights stay dark until `gsd-pads on`' if _pads_off
+                                 else 'on: idle colour restored'))
+    return _pads_off
+
+
+def pad_count():
+    """Pads attached right now: 1 while the USB pad is open, else 0."""
+    driver = _pad_driver
+    return 1 if driver is not None and driver.dev is not None else 0
+
+
+def pads_status():
+    return {'off': _pads_off, 'pads': pad_count()}
+
+
+load_pads_off()
+
 
 class Dimensions():
     """The LEGO Dimensions pad. Survives the pad being absent at start-up
@@ -207,17 +269,27 @@ class Dimensions():
             else:
                 logger.warning('USB write error: %s' % e)
 
+    # The three light commands are the only way a pad lights, so `gsd-pads
+    # off` is enforced here: while the flag is set only a dark paint goes
+    # through (that is how `off` itself blanks the pads), fades and flashes
+    # are dropped.
     def switch_pad(self, pad, colour):
-        self.send_command([0x55, 0x06, 0xc0, 0x02, pad, colour[0], 
+        if _pads_off and any(colour):
+            return
+        self.send_command([0x55, 0x06, 0xc0, 0x02, pad, colour[0],
                           colour[1], colour[2],])
         return
 
     def fade_pad(self, pad, pulse_time, pulse_count, colour):
-        self.send_command([0x55, 0x08, 0xc2, 0x0f, pad, pulse_time, 
+        if _pads_off:
+            return
+        self.send_command([0x55, 0x08, 0xc2, 0x0f, pad, pulse_time,
                           pulse_count, colour[0], colour[1], colour[2],])
         return
 
     def flash_pad(self, pad, on_length, off_length, pulse_count, colour):
+        if _pads_off:
+            return
         self.send_command([0x55, 0x09, 0xc3, 0x03, pad,
                           on_length, off_length, pulse_count,
                           colour[0], colour[1], colour[2],])
@@ -583,12 +655,28 @@ class Base():
 
         return hdmi_switched
 
+    def repaintPads(self, idle_colour):
+        """A `gsd-pads off|on` landed since the last pass of the pad loop:
+        paint every pad dark, or give it back the idle colour. Runs on the
+        pad loop's thread so the hook never writes to the USB pad itself."""
+        if not _pads_changed.is_set():
+            return
+        _pads_changed.clear()
+        self.base.switch_pad(0, self.OFF if _pads_off else idle_colour)
+
+    def paintPadOnline(self, idle_colour):
+        """A pad just came (back) online: give it its idle colour - or paint
+        it dark while `gsd-pads off` is in force, because a freshly plugged
+        (or rebooted) pad runs its own light show and would stay lit."""
+        self.base.switch_pad(0, self.OFF if _pads_off else idle_colour)
+
     def startLego(self):
         global current_tag
         global previous_tag
         global mp3state
         global p
         global switch_lights
+        global _pad_driver
         current_tag = None
         previous_tag = None
         mp3state = None
@@ -597,6 +685,7 @@ class Base():
         tags = nfctags.resolve_for_room(nfc.tags, ROOM)
         logger.info('Pad room: %s' % ROOM)
         self.base = Dimensions()
+        _pad_driver = self.base  # for gsd-pads status (pad_count)
         logger.info("Lego Dimensions base activated.")
         self.initMp3()
         try:
@@ -610,11 +699,12 @@ class Base():
         #                   on it (the action's colour), and goes dark again when
         #                   the figure is lifted.
         idle_colour = self.GREEN if switch_lights else self.OFF
-        self.base.switch_pad(0, idle_colour)
+        self.paintPadOnline(idle_colour)
         while True:
             if self.base.reconnect():
                 # A pad just came (back) online: give it its idle colour.
-                self.base.switch_pad(0, idle_colour)
+                self.paintPadOnline(idle_colour)
+            self.repaintPads(idle_colour)
             tag = self.base.update_nfc()
             if tag:
                 status = tag.split(':')[0]

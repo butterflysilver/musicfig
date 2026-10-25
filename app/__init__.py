@@ -70,6 +70,8 @@ app.config.from_object('config')
 with app.app_context(), app.test_request_context():
     from app.spotify import spotify as spotify_module
     app.register_blueprint(spotify_module)
+    from app.pads import pads as pads_module
+    app.register_blueprint(pads_module)
     logger.info('Musicfig %s started.' % app_version)
     if app.config['CLIENT_ID']:
         logger.info('To activate Spotify visit: %s' % app.config['REDIRECT_URI'].replace('callback',''))
