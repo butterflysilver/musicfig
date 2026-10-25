@@ -143,6 +143,14 @@ if id -u kiosk >/dev/null 2>&1; then
     visudo -cf /etc/sudoers.d/musicfig-gsd-screen >/dev/null || die "sudoers drop-in failed validation"
 fi
 
+# gsd-pads: blank/restore the pad's lights the way gsd-screen does the panel
+# (`ssh <room> gsd-screen off; ssh <room> gsd-pads off` = dark house). It
+# asks the running service over localhost (app/pads.py), so any user may run
+# it and no sudoers rule is needed. Root-owned copy out of the ${SVC_USER}-owned
+# checkout, like netwatch; standard library only, so the Pi's python3 runs it.
+log "Installing /usr/local/bin/gsd-pads..."
+install -o root -g root -m 0755 "${APP_DIR}/scripts/pi/pads.py" /usr/local/bin/gsd-pads
+
 # Unit line for the wake-on-tag hook; empty on a Pi with no kiosk user. systemd
 # splits an unquoted Environment= value on whitespace, so it must be quoted.
 ON_TAG_ENV=""
@@ -170,6 +178,7 @@ Environment=MUSICFIG_YOTO_TRACKS_URL=${MUSICFIG_YOTO_TRACKS_URL:-https://yoto-mc
 Environment=MUSICFIG_YOTO_TRACKS_KEY_FILE=${CONF_DIR}/yoto-tracks.key
 Environment=MUSICFIG_LOG_FILE=${SVC_HOME}/musicfig.log
 Environment=MUSICFIG_CACHE_DIR=${SVC_HOME}/cache
+Environment=MUSICFIG_PADS_OFF_FILE=${SVC_HOME}/pads-off
 ${ON_TAG_ENV}
 ExecStart=${VENV_DIR}/bin/python ${APP_DIR}/run.py
 Restart=always
@@ -333,6 +342,11 @@ cat <<HINTS
     sudo nano ${CONF_DIR}/tags.yml                     # add the UID under identifier:
     copy MP3s into ${SVC_HOME}/music/
     sudo systemctl restart musicfig
+
+  Pad lights: gsd-pads off|on|status blanks / restores the pad's lights with
+    musicfig running (figures still play); the pair with gsd-screen is the dark
+    house. 'off' is remembered in ${SVC_HOME}/pads-off across restarts.
+      gsd-pads status                                   # "on (1 pad)" / "off (no pad attached)"
 
   Yoto (optional): put the Yoto MCP shared secret in ${CONF_DIR}/yoto-tracks.key
     (root:${SVC_USER} 0640; scp it, never paste it), then map a tag with
