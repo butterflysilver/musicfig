@@ -79,10 +79,12 @@ class FlagTests(PadsStateMixin, unittest.TestCase):
 
     def test_startup_picks_the_flag_up_from_the_file(self):
         self.assertFalse(lego.load_pads_off())
+        self.assertFalse(lego._pads_changed.is_set())
         open(self.marker, 'w').close()
         with self.assertLogs(lego.logger, level='INFO'):
             self.assertTrue(lego.load_pads_off())
         self.assertTrue(lego.pads_off())
+        self.assertTrue(lego._pads_changed.is_set())   # the first loop pass paints dark
 
     def test_status_counts_the_attached_pad(self):
         self.assertEqual(lego.pads_status(), {'off': False, 'pads': 0})   # before startLego
@@ -154,6 +156,21 @@ class RepaintTests(PadsStateMixin, unittest.TestCase):
         lego.set_pads_off(False)
         self.base.repaintPads(OFF)            # idle colour is OFF with `lights: off`
         self.assertEqual([s[5:8] for s in self.base.base.sent], [[0, 0, 0], [0, 0, 0]])
+
+    def test_flag_loaded_from_file_paints_dark_on_the_first_pass(self):
+        # a watchdog reboot with `off` in force: the pad lit itself at power-on
+        open(self.marker, 'w').close()
+        lego.load_pads_off()
+        self.base.repaintPads(GREEN)
+        self.assertEqual(self.base.base.sent[0][4:8], [0, 0, 0, 0])
+
+    def test_pad_online_paints_idle_or_dark(self):
+        self.base.paintPadOnline(GREEN)             # start-up / reconnect, lights allowed
+        self.assertEqual(self.base.base.sent[-1][4:8], [0] + GREEN)
+        lego.set_pads_off(True)
+        self.base.paintPadOnline(GREEN)             # re-plugged while off: dark, not green
+        self.assertEqual(self.base.base.sent[-1][4:8], [0, 0, 0, 0])
+        self.assertEqual(len(self.base.base.sent), 2)
 
     def test_no_pad_attached_drops_the_paint_quietly(self):
         self.base.base = self.driver(dev=None)
@@ -260,9 +277,14 @@ class CliTests(unittest.TestCase):
 
     def test_http_error_and_garbage_are_reported_not_raised(self):
         self.error = urllib.error.HTTPError('http://127.0.0.1:5000/pads', 500, 'boom', {}, None)
-        self.assertEqual(self.run_cli('status')[0], 1)
+        rc, out, err = self.run_cli('status')
+        self.assertEqual((rc, out), (1, ''))
+        self.assertIn('answered with HTTP 500 (boom)', err)
+        self.assertNotIn('not answering', err)
         self.error = ValueError('not json')
-        self.assertEqual(self.run_cli('status')[0], 1)
+        rc, out, err = self.run_cli('status')
+        self.assertEqual(rc, 1)
+        self.assertIn('not answering', err)
 
     def test_usage(self):
         for argv in ((), ('toggle',), ('off', 'on')):

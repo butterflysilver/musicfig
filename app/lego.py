@@ -119,6 +119,9 @@ def load_pads_off():
     global _pads_off
     _pads_off = os.path.exists(PADS_OFF_FILE)
     if _pads_off:
+        # The pad lights itself up at power-on, so the first pass of the pad
+        # loop must paint it dark (repaintPads), not just hold the idle paint.
+        _pads_changed.set()
         logger.info('gsd-pads off is in force: lights stay dark until `gsd-pads on`')
     return _pads_off
 
@@ -661,6 +664,12 @@ class Base():
         _pads_changed.clear()
         self.base.switch_pad(0, self.OFF if _pads_off else idle_colour)
 
+    def paintPadOnline(self, idle_colour):
+        """A pad just came (back) online: give it its idle colour - or paint
+        it dark while `gsd-pads off` is in force, because a freshly plugged
+        (or rebooted) pad runs its own light show and would stay lit."""
+        self.base.switch_pad(0, self.OFF if _pads_off else idle_colour)
+
     def startLego(self):
         global current_tag
         global previous_tag
@@ -690,11 +699,11 @@ class Base():
         #                   on it (the action's colour), and goes dark again when
         #                   the figure is lifted.
         idle_colour = self.GREEN if switch_lights else self.OFF
-        self.base.switch_pad(0, idle_colour)
+        self.paintPadOnline(idle_colour)
         while True:
             if self.base.reconnect():
                 # A pad just came (back) online: give it its idle colour.
-                self.base.switch_pad(0, idle_colour)
+                self.paintPadOnline(idle_colour)
             self.repaintPads(idle_colour)
             tag = self.base.update_nfc()
             if tag:

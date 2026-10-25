@@ -63,6 +63,10 @@ def main(argv=None):
             state = call('GET', '/pads')
         else:
             state = call('POST', '/pads/' + cmd)
+    except urllib.error.HTTPError as e:
+        print('gsd-pads: musicfig answered with HTTP %s (%s) at %s - see its log '
+              '(journalctl -u musicfig)' % (e.code, e.reason, URL), file=sys.stderr)
+        return 1
     except (urllib.error.URLError, OSError, ValueError) as e:
         reason = getattr(e, 'reason', None) or e
         print('gsd-pads: musicfig is not answering at %s (%s) - is it running? '

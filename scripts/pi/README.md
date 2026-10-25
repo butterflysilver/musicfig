@@ -190,8 +190,10 @@ ssh kitchen gsd-pads status                              # "off (1 pad)" / "on (
   blue, the action colours, the lightshow and the lift's idle repaint are all
   dropped in the pad driver (`app/lego.py`, `Dimensions.switch_pad` /
   `fade_pad` / `flash_pad`); figures still play. The state is written to
-  `/var/lib/musicfig/pads-off`, so a restart of musicfig in the night (the
-  pad-gone exit, a watchdog reboot) does not light the pads again.
+  `/var/lib/musicfig/pads-off`, so after a restart of musicfig in the night
+  (the pad-gone exit, a watchdog reboot) - or a pad re-plugged - the service
+  paints the pad dark again as soon as it has it (the pad's own power-on
+  light show would otherwise leave it lit until morning).
 * `on`: the file goes, and the pad loop repaints the idle colour (green with
   `lights: on`, dark with `lights: off`).
 * `status`: the state plus the pad count (0 or 1), exit 0 either way.
