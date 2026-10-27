@@ -37,12 +37,18 @@ except ImportError:  # pragma: no cover - depends on the install
     SamsungTVWS = None
 
 logger = logging.getLogger(__name__)
+# samsungtvws logs the TV's token at INFO ("New token %s" on every connect
+# that carries one) and the websocket URL with the token in its query string
+# at DEBUG; musicfig's root logger is at INFO into musicfig.log, so cap the
+# library at WARNING before anything connects.
+logging.getLogger('samsungtvws').setLevel(logging.WARNING)
 
 REST_PORT = 8001           # http://<tv>:8001/api/v2/ (device info, no auth)
 WS_PORT = 8002             # wss remote control (token after the Allow prompt)
 WOL_PORT = 9
 HTTP_TIMEOUT = 3           # seconds; the TV is on the LAN, slower = not there
-WS_TIMEOUT = 5             # seconds; covers the Allow prompt only at pair time
+WS_TIMEOUT = 5             # seconds per key at runtime (the TV answers at once)
+PAIR_TIMEOUT = 30          # seconds for someone to press Allow on the TV at pair time
 EXIT_SETTLE = 0.8          # seconds after KEY_EXIT before the caller launches
 WAKE_POLL = 1.0            # seconds between /api/v2/ polls while waking
 DEFAULT_TOKEN_FILE = '/etc/musicfig/samsungtv.token'
@@ -174,10 +180,10 @@ def set_input_source(input_source):
     return False
 
 
-def _remote():
+def _remote(timeout=WS_TIMEOUT):
     """A fresh websocket remote; opened and closed around every key."""
     return SamsungTVWS(SAMSUNGTV_HOST, port=WS_PORT, token_file=SAMSUNGTV_TOKEN_FILE,
-                       name=SAMSUNGTV_NAME or default_name(), timeout=WS_TIMEOUT)
+                       name=SAMSUNGTV_NAME or default_name(), timeout=timeout)
 
 
 def send_key(key):
@@ -454,10 +460,10 @@ def _cli_pair(args):
         if not turn_on():
             print('FAILED: the TV did not come on')
             return 1
-    print('Pairing as "%s": press Allow on the TV when it asks...' % SAMSUNGTV_NAME)
+    print('Pairing as "%s": press Allow on the TV when it asks (%d s)...' % (SAMSUNGTV_NAME, PAIR_TIMEOUT))
     remote = None
     try:
-        remote = _remote()
+        remote = _remote(timeout=PAIR_TIMEOUT)
         remote.open()
         remote.send_key('KEY_INFO')
     except Exception as e:

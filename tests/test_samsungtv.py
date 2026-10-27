@@ -4,6 +4,8 @@ still sends, switch_to_appletv on / standby / unreachable, the Wake-on-LAN
 packet, and the never-raises promise. No network: requests.get, the websocket
 remote and the UDP socket are all fakes."""
 import itertools
+import logging
+import logging.handlers
 import os
 import tempfile
 import unittest
@@ -214,16 +216,23 @@ class SendKeyTests(SamsungTvTestCase):
             with self.assertLogs('app.samsungtv', level='ERROR'):
                 self.assertFalse(stv.send_key('OK'))
 
-    def test_token_never_reaches_the_log(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            token_file = os.path.join(tmp, 'samsungtv.token')
-            with open(token_file, 'w') as fh:
-                fh.write('SECRET-TOKEN-12345678')
-            stv.load_config(dict(TAGS, samsungtv_token_file=token_file))
-            with mock.patch.object(_FakeRemote, 'open', side_effect=RuntimeError('unauthorized')):
-                with self.assertLogs('app.samsungtv', level='DEBUG') as logs:
-                    stv.send_key('OK')
-            self.assertNotIn('SECRET-TOKEN', '\n'.join(logs.output))
+    def test_library_token_log_lines_are_silenced(self):
+        """samsungtvws logs "New token %s" at INFO on every connect and the
+        token-bearing websocket URL at DEBUG; importing app.samsungtv caps the
+        library's logger so neither reaches musicfig.log (root is at INFO)."""
+        for name in ('samsungtvws', 'samsungtvws.connection', 'samsungtvws.remote'):
+            self.assertFalse(logging.getLogger(name).isEnabledFor(logging.INFO), name)
+            self.assertFalse(logging.getLogger(name).isEnabledFor(logging.DEBUG), name)
+        root = logging.getLogger()
+        handler = logging.handlers.MemoryHandler(100)
+        root.addHandler(handler)
+        self.addCleanup(root.removeHandler, handler)
+        logging.getLogger('samsungtvws.connection').info('New token %s', 'SECRET-TOKEN-12345678')
+        logging.getLogger('samsungtvws.remote').debug('WS url %s', 'wss://tv:8002/?token=SECRET-TOKEN-12345678')
+        logging.getLogger('samsungtvws.connection').warning('still reported')
+        messages = [r.getMessage() for r in handler.buffer]
+        self.assertNotIn('SECRET-TOKEN', '\n'.join(messages))
+        self.assertIn('still reported', messages)
 
 
 class PowerStateTests(SamsungTvTestCase):
@@ -501,6 +510,11 @@ class CliTests(SamsungTvTestCase):
             self.assertNotIn('tok\n', printed)
             remote = _FakeRemote.instances[0]
             self.assertEqual((remote.name, remote.token_file, remote.keys), ('musicfig test', token_file, ['KEY_INFO']))
+            # Someone has to walk to the TV and press Allow: pairing waits
+            # longer than a runtime key does.
+            self.assertEqual(remote.timeout, stv.PAIR_TIMEOUT)
+            self.assertGreaterEqual(stv.PAIR_TIMEOUT, 30)
+            self.assertGreater(stv.PAIR_TIMEOUT, stv.WS_TIMEOUT)
 
     def test_pair_failure(self):
         self.get.return_value = _state('on')

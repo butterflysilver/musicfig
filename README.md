@@ -190,12 +190,14 @@ Notes:
   and after `samsungtv_host` / `samsungtv_mac` are in `tags.yml`:
 
   ```bash
-  sudo MUSICFIG_NO_AUTOSTART=1 PYTHONPATH=/etc/musicfig /opt/musicfig/.venv/bin/python \n      -m app.samsungtv pair --host <tv ip> --mac <tv mac>     # press Allow on the TV
+  sudo MUSICFIG_NO_AUTOSTART=1 MUSICFIG_LOG_FILE=/dev/null PYTHONPATH=/etc/musicfig:/opt/musicfig /opt/musicfig/.venv/bin/python -m app.samsungtv pair --host <tv ip> --mac <tv mac>     # press Allow on the TV (30 s)
   sudo chown musicfig:musicfig /etc/musicfig/samsungtv.token && sudo chmod 0600 /etc/musicfig/samsungtv.token
-  sudo MUSICFIG_NO_AUTOSTART=1 PYTHONPATH=/etc/musicfig /opt/musicfig/.venv/bin/python \n      -m app.samsungtv status --host <tv ip>                  # PowerState / name / model
+  sudo MUSICFIG_NO_AUTOSTART=1 MUSICFIG_LOG_FILE=/dev/null PYTHONPATH=/etc/musicfig:/opt/musicfig /opt/musicfig/.venv/bin/python -m app.samsungtv status --host <tv ip>                  # PowerState / name / model
   ```
 
-  `MUSICFIG_NO_AUTOSTART=1` keeps the command from starting a second pad thread next to the service. The TV
+  `MUSICFIG_NO_AUTOSTART=1` keeps the command from starting a second pad thread next to the service,
+  `MUSICFIG_LOG_FILE=/dev/null` keeps it from dropping a root-owned `musicfig.log` in the current directory, and
+  `/opt/musicfig` on `PYTHONPATH` is what lets `-m app.samsungtv` find the package from any directory. The TV
   lists the pad as `musicfig <room>` (`samsungtv_name`) under *Connection > External Device Manager > Device
   Connection Manager*, where the pairing can be revoked; the token file is then deleted and the pairing redone.
   A pairing done on one Pi does not carry to another: each Pi pairs once with the TV in its room.

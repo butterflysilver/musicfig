@@ -34,8 +34,9 @@ lights: on
 # The Apple TV / Xbox take the HDMI input themselves over HDMI-CEC; the pad only
 # wakes the TV (Wake-on-LAN + KEY_POWER) and clears Samsung's home bar (KEY_EXIT).
 # Needs the TV setting "Power On with Mobile" and a one-time pairing (press Allow
-# on the TV): sudo MUSICFIG_NO_AUTOSTART=1 PYTHONPATH=/etc/musicfig \
-#   /opt/musicfig/.venv/bin/python -m app.samsungtv pair --host <ip> --mac <mac>
+# on the TV, 30 s):
+#   sudo MUSICFIG_NO_AUTOSTART=1 MUSICFIG_LOG_FILE=/dev/null PYTHONPATH=/etc/musicfig:/opt/musicfig \
+#     /opt/musicfig/.venv/bin/python -m app.samsungtv pair --host <ip> --mac <mac>
 # samsungtv_host: 192.168.1.60                     # the TV's IP (required; this alone = configured)
 # samsungtv_mac: "AA:BB:CC:DD:EE:FF"               # the TV's Wi-Fi MAC, for Wake-on-LAN
 # samsungtv_token_file: /etc/musicfig/samsungtv.token   # default; owner musicfig, mode 0600, never in git
