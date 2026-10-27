@@ -646,11 +646,11 @@ class Base():
             logger.info('Switching HDMI via Hue Sync Box...')
             hdmi_switched = huesyncbox.switch_to_appletv_sync()
 
-        # Fall back to Samsung SmartThings TV
+        # Fall back to the Samsung TV (local API: wake it, clear its overlay)
         if not hdmi_switched:
             samsungtv.load_config(tags)
             if samsungtv.configured():
-                logger.info('Switching HDMI via Samsung SmartThings...')
+                logger.info('Readying the Samsung TV for the Apple TV (local API)...')
                 hdmi_switched = samsungtv.switch_to_appletv()
 
         return hdmi_switched
@@ -939,27 +939,15 @@ class Base():
                             self.stopMp3()
                             xboxctl.load_config(tags)
                             logger.info('Powering on Xbox...')
-                            # Switch TV via menu: HOME → LEFT → DOWN → RIGHT → DOWN×3 → OK
+                            # The TV only has to be on and clear of Samsung's home
+                            # bar: the console takes the input over HDMI-CEC when
+                            # it wakes (its Device control setting, see README).
                             samsungtv.load_config(tags)
                             if samsungtv.configured():
-                                logger.info('Switching TV to Xbox via menu navigation...')
-                                # Navigate Samsung TV to Connected Devices → Xbox
-                                nav_keys = [
-                                    ("HOME", 1.5),
-                                    ("LEFT", 0.5),
-                                    ("DOWN", 0.5),   # To Connected Devices
-                                    ("RIGHT", 0.5),  # Step into list
-                                    ("DOWN", 0.3),
-                                    ("DOWN", 0.3),
-                                    ("DOWN", 0.3),   # Xbox (4th item)
-                                    ("OK", 0.0)
-                                ]
-                                for key, delay in nav_keys:
-                                    if not samsungtv.send_key(key):
-                                        logger.warning('TV key %s failed' % key)
-                                    if delay > 0:
-                                        time.sleep(delay)
-                                logger.info('TV switch to Xbox complete')
+                                if samsungtv.ensure_on():
+                                    logger.info('TV on; Xbox takes the input over HDMI-CEC')
+                                else:
+                                    logger.warning('TV not on; Xbox may wake on a dark screen')
                             # Power on Xbox
                             if xboxctl.sync_power_on():
                                 self.base.switch_pad(pad, self.OLIVE)  # Yellow-green for Xbox

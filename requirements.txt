@@ -8,3 +8,4 @@ requests
 mpg123
 mutagen
 unidecode
+samsungtvws>=3.0,<4   # Samsung TV local API (power state on :8001, remote keys over the :8002 websocket)

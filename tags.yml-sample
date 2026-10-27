@@ -30,6 +30,17 @@ lights: on
 # xbox_client_id: "<azure app id>"
 # xbox_client_secret: "<azure app secret>"
 # xbox_console_id: "F4000F3ACB4A6A80"   # this pad's console
+# Samsung TV (optional, local API - no SmartThings cloud, no expiring token).
+# The Apple TV / Xbox take the HDMI input themselves over HDMI-CEC; the pad only
+# wakes the TV (Wake-on-LAN + KEY_POWER) and clears Samsung's home bar (KEY_EXIT).
+# Needs the TV setting "Power On with Mobile" and a one-time pairing (press Allow
+# on the TV): sudo MUSICFIG_NO_AUTOSTART=1 PYTHONPATH=/etc/musicfig \
+#   /opt/musicfig/.venv/bin/python -m app.samsungtv pair --host <ip> --mac <mac>
+# samsungtv_host: 192.168.1.60                     # the TV's IP (required; this alone = configured)
+# samsungtv_mac: "AA:BB:CC:DD:EE:FF"               # the TV's Wi-Fi MAC, for Wake-on-LAN
+# samsungtv_token_file: /etc/musicfig/samsungtv.token   # default; owner musicfig, mode 0600, never in git
+# samsungtv_name: musicfig game-room               # default: musicfig <MUSICFIG_ROOM or hostname>
+# samsungtv_wake_timeout: 12                       # seconds to wait for PowerState "on" after a wake
 # Room awareness (optional). Each Pi knows its room (MUSICFIG_ROOM, defaults
 # to the hostname). A tag can behave differently per room with a `rooms:`
 # block, and `homepod: "@room"` targets the HomePod listed for that room here.
