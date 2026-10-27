@@ -22,6 +22,7 @@
 | **Yoto card to HomePod** | `yoto_airplay: <card id>` streams a Yoto card (audiobooks, MYO uploads) to the room's HomePod. The Pi asks a small Yoto MCP service for the card's signed track URLs at tap time (one shared secret per household, never a Yoto token on the Pi) and pyatv streams them in order (Yoto serves AAC, so the Pi transcodes into one-minute MP3 segments with ffmpeg and plays them back to back). Lift the figure to stop. |
 | **Yoto card on the Yoto itself** | `yoto: <card id>` plays the card on a real Yoto player ("card to device"): the Pi asks the same Yoto MCP to start it on `yoto_player` (a player id, its name, `"@room"` via `room_yoto_players`, or by default whichever player is online). Lift the figure to stop. No Yoto token on the Pi. |
 | **Room-aware tags** | Each Pi knows its room (`MUSICFIG_ROOM`, default: hostname). A tag can carry per-room overrides and `homepod: "@room"` targets that room's speaker. |
+| **Samsung TV, local API** | `samsungtv_host` + `samsungtv_mac` wake the TV (Wake-on-LAN, then KEY_POWER over the TV's own websocket) and clear its home bar before an Apple TV / Xbox tag; the Apple TV and the Xbox take the HDMI input themselves over HDMI-CEC. No SmartThings cloud, no token that expires after 24 h: one Allow prompt on the TV, the token stays in `/etc/musicfig`. |
 | **Optional integrations** | Apple TV (Disney+, Netflix, YouTube deep links), HomePod, Hue Sync Box and Xbox are optional imports: a Pi without them still runs. `install.sh` installs the extras by default (`MUSICFIG_EXTRAS=no` to skip). |
 | **Tests** | `python -m unittest` (see `tests/`). `MUSICFIG_NO_AUTOSTART=1` (set by `tests/__init__.py`) makes `import app` skip starting the pad thread; the service never sets it. |
 
@@ -71,6 +72,14 @@ room_homepods:
 # A room without an entry falls back to "@online" (the players are portable).
 room_yoto_players:
   playroom: Playroom Yoto
+
+# Samsung TV over its local API (optional). The TV's IP and Wi-Fi MAC; the
+# token from the one-time pairing lives in samsungtv_token_file, never here.
+samsungtv_host: 192.168.1.60
+samsungtv_mac: "AA:BB:CC:DD:EE:FF"
+# samsungtv_token_file: /etc/musicfig/samsungtv.token   # default
+# samsungtv_name: musicfig playroom                     # default: musicfig <MUSICFIG_ROOM or hostname>
+# samsungtv_wake_timeout: 12                            # seconds to wait for the TV to report on
 
 identifier:
   05631b62124:
@@ -155,10 +164,43 @@ Notes:
   TV app movies: share the title in the TV app and use the full `https://tv.apple.com/us/movie/...` link.
 * A room with no entry in `room_homepods` makes `"@room"` resolve to nothing, so the tag falls back to its
   other actions rather than playing on the wrong speaker.
+* A Samsung TV is driven over its **local** API (`samsungtv_host`, the TV's IP; `samsungtv_mac`, its Wi-Fi
+  MAC): `GET :8001/api/v2/` reports the power state with no auth, remote keys go over the `:8002` websocket
+  (`samsungtvws`), and a TV in standby is woken with a Wake-on-LAN magic packet followed by KEY_POWER once it
+  answers (the TV setting *Power On with Mobile* must be on; it reports on ~3 s later, `samsungtv_wake_timeout`
+  caps the wait at 12 s). Before an Apple TV or Xbox tag the pad only makes sure the TV is on and presses
+  KEY_EXIT to clear Samsung's home bar (`ensure_on()`); the **input is not chosen by the pad** - the Apple TV
+  (`appletv_cec_wake`) and the Xbox take it themselves over HDMI-CEC. The local API never says which input is
+  live and this set ignores the numbered KEY_HDMI1-4, so `get_current_input()` is always `None` and
+  `set_input_source()` is a logged no-op. The old SmartThings cloud keys (`smartthings_token`,
+  `smartthings_tv_device_id`, `smartthings_appletv_input`) are gone: left in `tags.yml` without
+  `samsungtv_host` they log one warning and the TV counts as unconfigured. Pairing is a one-time step per Pi
+  (see *Security and privacy*).
+* Xbox input switching relies on the console, not the pad: on the Xbox, *Settings > General > TV & display
+  options > Device control* must have HDMI-CEC on with "console turns on the TV" and "console switches the
+  TV input" (or equivalent) ticked, and the power mode must be *Sleep* with remote features enabled, or the
+  Xbox Live wake-up is "not delivered" and nothing switches. The pad just wakes the TV first so the
+  console's CEC request lands on a TV that is listening.
 
 ## Security and privacy
 
 * The Yoto shared secret lives in `/etc/musicfig/yoto-tracks.key` (root-owned, readable by the service user only). Copy it with `scp`; it is never in the repo or the unit file.
+* The Samsung TV's remote token lives in `/etc/musicfig/samsungtv.token` (owner `musicfig`, mode 0600; never in
+  `tags.yml`, never logged). It is minted by the TV during a one-time pairing, run on the Pi after the install
+  and after `samsungtv_host` / `samsungtv_mac` are in `tags.yml`:
+
+  ```bash
+  sudo MUSICFIG_NO_AUTOSTART=1 MUSICFIG_LOG_FILE=/dev/null PYTHONPATH=/etc/musicfig:/opt/musicfig /opt/musicfig/.venv/bin/python -m app.samsungtv pair --host <tv ip> --mac <tv mac>     # press Allow on the TV (30 s)
+  sudo chown musicfig:musicfig /etc/musicfig/samsungtv.token && sudo chmod 0600 /etc/musicfig/samsungtv.token
+  sudo MUSICFIG_NO_AUTOSTART=1 MUSICFIG_LOG_FILE=/dev/null PYTHONPATH=/etc/musicfig:/opt/musicfig /opt/musicfig/.venv/bin/python -m app.samsungtv status --host <tv ip>                  # PowerState / name / model
+  ```
+
+  `MUSICFIG_NO_AUTOSTART=1` keeps the command from starting a second pad thread next to the service,
+  `MUSICFIG_LOG_FILE=/dev/null` keeps it from dropping a root-owned `musicfig.log` in the current directory, and
+  `/opt/musicfig` on `PYTHONPATH` is what lets `-m app.samsungtv` find the package from any directory. The TV
+  lists the pad as `musicfig <room>` (`samsungtv_name`) under *Connection > External Device Manager > Device
+  Connection Manager*, where the pairing can be revoked; the token file is then deleted and the pairing redone.
+  A pairing done on one Pi does not carry to another: each Pi pairs once with the TV in its room.
 * `tags.yml` and `config.py` are **git-ignored on purpose**: they hold pairing credentials and API tokens.
   Never commit them, never paste them into an issue. Copy them to a Pi with `scp`.
 * The service runs as an unprivileged system user; the pad is the only USB device it can open (udev rule).
